@@ -1,0 +1,6 @@
+PySide6>=6.6
+opencv-python-headless>=4.8
+numpy>=1.26
+Pillow>=10.1
+pillow-heif>=0.16
+openpyxl>=3.1
