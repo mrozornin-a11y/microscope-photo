@@ -43,6 +43,7 @@ class MediaService(QObject):
         self.det_worker.failed.connect(self._on_failed)
         self.det_worker.start()
         ctrl.projectLoaded.connect(self._on_project)
+        ctrl.photoListChanged.connect(self._reindex)
         ctrl.currentChanged.connect(self._on_current)
 
     def shutdown(self) -> None:
@@ -62,6 +63,10 @@ class MediaService(QObject):
                 self.worker.request(p.source_path, PRIO_BACKGROUND)
                 if p.circle is None:
                     self.det_worker.request(p.source_path, PRIO_BACKGROUND, detect=True)
+
+    def _reindex(self) -> None:
+        """Состав партии изменился — результаты фоновых задач ищем по пути, а не по старому индексу."""
+        self._index = {p.source_path: i for i, p in enumerate(self.ctrl.photos)}
 
     def _on_current(self, index: int) -> None:
         photos = self.ctrl.photos

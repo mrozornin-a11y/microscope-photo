@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QHBoxLayout, QLab
 
 from ..core import naming, project_ops
 from ..core.constants import EXPORT_FORMATS
+from ..core.models import BACKGROUND_COLORS
 from ..core.exporter import plan_export
 from ..workers.export_worker import ExportSummary, ExportWorker
 from ..workers.render_worker import FinalRenderer
@@ -153,6 +154,13 @@ class FinalPage(QWidget):
         self.more = QFrame()
         ml = QVBoxLayout(self.more)
         ml.setContentsMargins(0, 0, 0, 0)
+        bg_row = QHBoxLayout()
+        bg_row.addWidget(QLabel("Фон:"))
+        self.bg_toggle = ToggleGroup([(k, v) for k, v in BACKGROUND_COLORS.items()])
+        self.bg_toggle.setToolTip("Цвет за пределами поля зрения (для всей партии)")
+        self.bg_toggle.valueChanged.connect(self._background_changed)
+        bg_row.addWidget(self.bg_toggle, 1)
+        ml.addLayout(bg_row)
         row = QHBoxLayout()
         row.addWidget(QLabel("Формат:"))
         self.format_combo = QComboBox()
@@ -406,6 +414,7 @@ class FinalPage(QWidget):
 
     def _sync_export_controls(self) -> None:
         ex = self.ctrl.settings.export
+        self.bg_toggle.set_value(self.ctrl.settings.background_color)
         self.format_combo.blockSignals(True)
         self.format_combo.setCurrentIndex(max(0, self.format_combo.findData(ex.format)))
         self.format_combo.blockSignals(False)
@@ -414,6 +423,12 @@ class FinalPage(QWidget):
         self.quality.blockSignals(False)
         self.quality.setEnabled(ex.format == "jpg")
         self.quality_lbl.setEnabled(ex.format == "jpg")
+
+    def _background_changed(self, key: str) -> None:
+        self.bg_toggle.set_value(key)
+        s = self.ctrl.settings.copy()
+        s.background_color = key
+        self.ctrl.set_settings(s, "Фон: " + BACKGROUND_COLORS[key].lower())
 
     def _format_changed(self) -> None:
         s = self.ctrl.settings.copy()

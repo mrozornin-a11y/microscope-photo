@@ -16,7 +16,7 @@ import functools
 import logging
 from dataclasses import dataclass
 
-from PIL import Image, ImageDraw, ImageFont, ImageStat
+from PIL import Image, ImageDraw, ImageFont
 
 from .models import CalibrationEntry, ScaleSettings
 
@@ -98,24 +98,23 @@ def geometry(width: int, height: int, fraction: float, s: ScaleSettings, label: 
     return BarGeometry(x1, x2, bar_top, bar_bottom, tick_top, text_x, text_baseline, th, outline, font_size)
 
 
-def _auto_style(img: Image.Image, g: BarGeometry) -> str:
-    box = (max(0, g.x1), max(0, int(g.text_baseline - g.font_size * 1.1)),
-           min(img.width, g.x2), min(img.height, g.bar_bottom))
-    if box[2] <= box[0] or box[3] <= box[1]:
-        return "white"
-    region = img.crop(box).convert("L")
-    mean = ImageStat.Stat(region).mean[0]
-    return "black" if mean > 140 else "white"
+def scale_color(s: ScaleSettings, background: str) -> str:
+    """Цвет шкалы: выбранный вручную или «автоматически» — контрастный к фону."""
+    if s.color_mode in ("white", "black"):
+        return s.color_mode
+    return "black" if background == "white" else "white"
 
 
-def draw_scale_bar(img: Image.Image, cal: CalibrationEntry, s: ScaleSettings) -> Image.Image:
-    """Рисует шкалу на копии изображения и возвращает ее."""
+def draw_scale_bar(img: Image.Image, cal: CalibrationEntry, s: ScaleSettings,
+                   background: str = "black") -> Image.Image:
+    """Рисует шкалу на копии изображения и возвращает ее.
+
+    Шкала рисуется последней — после резкости, поэтому остается идеально четкой.
+    """
     out = img.copy() if img.mode == "RGB" else img.convert("RGB")
     g = geometry(out.width, out.height, cal.fraction, s, cal.label)
-    style = s.style
-    if style == "auto":
-        style = _auto_style(out, g)
-    fill, edge = (LIGHT, DARK) if style == "white" else (DARK, LIGHT)
+    color = scale_color(s, background)
+    fill, edge = (LIGHT, DARK) if color == "white" else (DARK, LIGHT)
 
     draw = ImageDraw.Draw(out)
     th = g.thickness

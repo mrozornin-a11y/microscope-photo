@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
-from PySide6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate, QStyleOptionViewItem
+from PySide6.QtCore import QAbstractListModel, QItemSelectionModel, QModelIndex, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter, QPen
+from PySide6.QtWidgets import (QAbstractItemView, QListView, QMenu, QStyle, QStyledItemDelegate,
+                               QStyleOptionViewItem)
 
 from ...core import naming, project_ops
 from .. import theme
@@ -34,6 +35,7 @@ class PhotoListModel(QAbstractListModel):
         self.ctrl = ctrl
         self.media = media
         ctrl.projectLoaded.connect(self._reset)
+        ctrl.photoListChanged.connect(self._reset)
         ctrl.photoChanged.connect(self._changed)
         ctrl.settingsChanged.connect(self._all_changed)
         media.thumbReady.connect(self._changed)
@@ -138,6 +140,7 @@ class PhotoDelegate(QStyledItemDelegate):
 
 class PhotoListView(QListView):
     photoActivated = Signal(int)
+    removeRequested = Signal(list)      # строки, которые нужно убрать из партии
 
     def __init__(self, ctrl: ProjectController, media: MediaService, parent=None) -> None:
         super().__init__(parent)
@@ -146,7 +149,8 @@ class PhotoListView(QListView):
         self._model = PhotoListModel(ctrl, media, self)
         self.setModel(self._model)
         self.setItemDelegate(PhotoDelegate(self))
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # Ctrl/Shift + щелчок — выбрать несколько фото (например, чтобы убрать их из партии)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setUniformItemSizes(True)
         self.setMouseTracking(True)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -154,6 +158,28 @@ class PhotoListView(QListView):
         self.selectionModel().currentChanged.connect(self._on_current)
         ctrl.currentChanged.connect(self.select_row)
         ctrl.projectLoaded.connect(lambda: self.select_row(ctrl.current_index))
+        ctrl.photoListChanged.connect(lambda: self.select_row(ctrl.current_index))
+
+    def selected_rows(self) -> list[int]:
+        rows = sorted({i.row() for i in self.selectionModel().selectedRows()})
+        if not rows and 0 <= self.ctrl.current_index < self._model.rowCount():
+            rows = [self.ctrl.current_index]
+        return rows
+
+    def contextMenuEvent(self, e) -> None:  # noqa: N802
+        idx = self.indexAt(e.pos())
+        if not idx.isValid():
+            return
+        if idx.row() not in self.selected_rows():
+            self.setCurrentIndex(idx)
+        rows = self.selected_rows()
+        menu = QMenu(self)
+        text = "Убрать из проекта" if len(rows) == 1 else f"Убрать из проекта ({len(rows)} фото)"
+        act = menu.addAction(text)
+        act.setShortcut(QKeySequence(Qt.Key.Key_Delete))
+        act.setToolTip("Файлы на диске не удаляются. Вернуть — Ctrl+Z")
+        if menu.exec(e.globalPos()) is act:
+            self.removeRequested.emit(rows)
 
     def _on_current(self, cur: QModelIndex, _prev: QModelIndex) -> None:
         if cur.isValid() and cur.row() != self.ctrl.current_index:
@@ -164,5 +190,7 @@ class PhotoListView(QListView):
             return
         idx = self._model.index(row, 0)
         if self.currentIndex() != idx:
-            self.setCurrentIndex(idx)
+            # переход к другому фото из программы (Enter, стрелки, Undo) — выделено только оно;
+            # щелчки мышью с Ctrl/Shift меняют текущую строку сами и сюда не попадают
+            self.selectionModel().setCurrentIndex(idx, QItemSelectionModel.SelectionFlag.ClearAndSelect)
         self.scrollTo(idx, QAbstractItemView.ScrollHint.EnsureVisible)

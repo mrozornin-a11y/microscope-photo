@@ -85,6 +85,7 @@ class CropPage(QWidget):
         ctrl.currentChanged.connect(self._on_current)
         ctrl.photoChanged.connect(self._on_photo_changed)
         ctrl.projectLoaded.connect(self._on_project)
+        ctrl.photoListChanged.connect(self._on_project)    # индексы сдвинулись — ожидания сбросить
         media.previewReady.connect(self._on_preview_ready)
         media.detectionDone.connect(self._on_detection)
 

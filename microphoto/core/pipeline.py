@@ -3,9 +3,11 @@
 Порядок:
  1. поворот по EXIF;
  2. квадратная обрезка по подтвержденному кругу;
- 3. черный фон вне круга;
- 4. повышение резкости (до шкалы — текст и линия шкалы не «резкостятся»);
- 5. масштабная шкала.
+ 3. маска круга и выбранный фон (черный / белый);
+ 4. повышение резкости — только реального изображения: резкость считается
+    по снимку до наложения фона, затем фон накладывается заново, так что
+    искусственный фон и граница круга не «резкостятся»;
+ 5. масштабная шкала — последней, поэтому остается идеально четкой.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from dataclasses import dataclass
 
 from PIL import Image
 
-from .cropper import apply_mask, crop_circle
+from .cropper import apply_mask, crop_square
 from .image_loader import LoadedImage, load_oriented
 from .models import PhotoItem, ProcessingSettings
 from .project_ops import default_circle
@@ -30,18 +32,17 @@ class ProcessingError(Exception):
 class Rendered:
     image: Image.Image
     source: LoadedImage
-    sharpened_only: Image.Image | None = None    # без шкалы (для сравнения в настройках)
 
 
 def process_image(img: Image.Image, photo: PhotoItem, settings: ProcessingSettings,
                   with_scale: bool = True, max_side: int | None = None) -> Image.Image:
     circle = photo.circle or default_circle(img.width, img.height)
-    out, mask = crop_circle(img, circle)
+    out, mask = crop_square(img, circle)
     if max_side and out.width > max_side:
         out = out.resize((max_side, max_side), Image.Resampling.LANCZOS)
         mask = mask.resize((max_side, max_side), Image.Resampling.BILINEAR)
-    if settings.sharpen.enabled and settings.sharpen.amount > 0:
-        out = apply_mask(sharpen(out, settings.sharpen), mask)
+    out = sharpen(out, settings.sharpen)
+    out = apply_mask(out, mask, settings.background_color)
     if with_scale:
         out = add_scale(out, photo, settings)
     return out
@@ -53,7 +54,7 @@ def add_scale(img: Image.Image, photo: PhotoItem, settings: ProcessingSettings) 
     cal = settings.scale.calibration.get(photo.magnification)
     if cal is None:
         return img
-    return draw_scale_bar(img, cal, settings.scale)
+    return draw_scale_bar(img, cal, settings.scale, settings.background_color)
 
 
 def render(photo: PhotoItem, settings: ProcessingSettings, max_side: int | None = None) -> Rendered:

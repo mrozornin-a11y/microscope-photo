@@ -1,4 +1,4 @@
-"""Настройки: масштабная шкала (калибровка и внешний вид), резкость, экспорт.
+"""Настройки: обработка (фон, резкость), масштабная шкала, экспорт.
 
 Все изменения видны сразу в preview, а в проект попадают одной записью
 истории (Undo) при нажатии «Применить».
@@ -9,29 +9,31 @@ from __future__ import annotations
 import logging
 
 from PIL import Image
-from PySide6.QtCore import QRect, Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeyEvent, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
                                QPushButton, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from ..core.constants import EXPORT_FORMATS, MAGNIFICATIONS
-from ..core.cropper import crop_circle
+from ..core.cropper import apply_mask, crop_square
 from ..core.image_loader import load_oriented
-from ..core.models import (SCALE_MARGINS, SCALE_POSITIONS, SCALE_SIZES, SCALE_STYLES, CalibrationEntry, Circle,
-                           PhotoItem, ProcessingSettings, default_calibration)
+from ..core.models import (BACKGROUND_COLORS, SCALE_COLORS, SCALE_MARGINS, SCALE_POSITIONS, SCALE_SIZES,
+                           CalibrationEntry, Circle, PhotoItem, ProcessingSettings, default_calibration)
 from ..core.project_ops import default_circle
 from ..core.scale_bar import draw_scale_bar
-from ..core.sharpness import SHARPENERS, sharpen
 from ..workers.render_worker import pil_to_qimage
 from .controller import ProjectController
 from .media import MediaService
+from .widgets.sharpen_preview import SharpenPreview
+from .widgets.toggles import ToggleGroup
 
 log = logging.getLogger(__name__)
 
 PREVIEW_SIDE = 900
-FRAGMENT = 320
+
+TAB_PROCESSING, TAB_SCALE, TAB_EXPORT = 0, 1, 2
 
 
 def _combo(options: dict[str, str]) -> QComboBox:
@@ -48,41 +50,24 @@ def _note(text: str) -> QLabel:
     return lbl
 
 
-class _PickLabel(QLabel):
-    """Миниатюра с рамкой выбранного фрагмента; щелчок выбирает фрагмент."""
-
-    picked = Signal(float, float)    # доли 0…1
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.frac_rect: tuple[float, float, float, float] | None = None
-        self.setCursor(Qt.CursorShape.CrossCursor)
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-    def mousePressEvent(self, e: QMouseEvent) -> None:  # noqa: N802
-        pm = self.pixmap()
-        if pm is None or pm.isNull():
-            return
-        ox = (self.width() - pm.width()) / 2
-        oy = (self.height() - pm.height()) / 2
-        fx = (e.position().x() - ox) / pm.width()
-        fy = (e.position().y() - oy) / pm.height()
-        if 0 <= fx <= 1 and 0 <= fy <= 1:
-            self.picked.emit(fx, fy)
-
-    def paintEvent(self, e) -> None:  # noqa: N802
-        super().paintEvent(e)
-        pm = self.pixmap()
-        if self.frac_rect is None or pm is None or pm.isNull():
-            return
-        ox = (self.width() - pm.width()) / 2
-        oy = (self.height() - pm.height()) / 2
-        x, y, w, h = self.frac_rect
-        p = QPainter(self)
-        p.setPen(QPen(QColor(255, 214, 10), 2))
-        p.drawRect(QRect(int(ox + x * pm.width()), int(oy + y * pm.height()),
-                         max(4, int(w * pm.width())), max(4, int(h * pm.height()))))
-        p.end()
+def describe_change(old: ProcessingSettings, new: ProcessingSettings) -> str:
+    """Понятная подпись для истории Undo."""
+    parts = []
+    if old.background_color != new.background_color:
+        parts.append("Фон: " + BACKGROUND_COLORS[new.background_color].lower())
+    if old.sharpen.to_dict() != new.sharpen.to_dict():
+        parts.append("Резкость")
+    if old.scale.color_mode != new.scale.color_mode:
+        parts.append("Цвет шкалы")
+    o, n = old.scale.to_dict(), new.scale.to_dict()
+    o.pop("color_mode"), n.pop("color_mode")
+    if o != n:
+        parts.append("Масштабная шкала")
+    if old.export.to_dict() != new.export.to_dict():
+        parts.append("Экспорт")
+    if len(parts) == 1:
+        return parts[0]
+    return "Изменение настроек"
 
 
 class SettingsDialog(QDialog):
@@ -93,15 +78,15 @@ class SettingsDialog(QDialog):
         self.media = media
         self.s: ProcessingSettings = ctrl.settings.copy()
         self._loading = True
-        self._base: Image.Image | None = None            # обрезанное, без резкости, ~900 px
-        self._full_crop: Image.Image | None = None       # обрезанное в полном разрешении (для 100 %)
-        self._frag_center = (0.5, 0.5)
+        self._base: Image.Image | None = None            # обрезка без фона, ~900 px (для шкалы)
+        self._base_mask: Image.Image | None = None
+        self._full_loaded = False                        # оригинал для просмотра резкости
         self.photo: PhotoItem | None = ctrl.current
 
         lay = QVBoxLayout(self)
         self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_processing_tab(), "Обработка")
         self.tabs.addTab(self._build_scale_tab(), "Масштабная шкала")
-        self.tabs.addTab(self._build_sharp_tab(), "Резкость")
         self.tabs.addTab(self._build_export_tab(), "Экспорт")
         self.tabs.currentChanged.connect(self._tab_changed)
         lay.addWidget(self.tabs, 1)
@@ -117,9 +102,10 @@ class SettingsDialog(QDialog):
         self._load_values()
         self._loading = False
         self._prepare_base()
+        self.resize(1120, 740)
         self.tabs.setCurrentIndex(tab)
+        self._tab_changed(self.tabs.currentIndex())
         self._update_scale_preview()
-        self.resize(1080, 700)
 
     # ---------------------------------------------------------------- шкала
     def _build_scale_tab(self) -> QWidget:
@@ -169,13 +155,13 @@ class SettingsDialog(QDialog):
         fl = QFormLayout(look)
         fl.addRow(_note("Только оформление — на размер шкалы не влияет."))
         self.pos_combo = _combo(SCALE_POSITIONS)
-        self.style_combo = _combo(SCALE_STYLES)
+        self.color_combo = _combo(SCALE_COLORS)
         self.size_combo = _combo(SCALE_SIZES)
         self.margin_combo = _combo(SCALE_MARGINS)
-        for c in (self.pos_combo, self.style_combo, self.size_combo, self.margin_combo):
+        for c in (self.color_combo, self.pos_combo, self.size_combo, self.margin_combo):
             c.currentIndexChanged.connect(self._changed)
+        fl.addRow("Цвет:", self.color_combo)
         fl.addRow("Положение:", self.pos_combo)
-        fl.addRow("Стиль:", self.style_combo)
         fl.addRow("Размер:", self.size_combo)
         fl.addRow("Отступ от края:", self.margin_combo)
         left.addWidget(look)
@@ -206,65 +192,111 @@ class SettingsDialog(QDialog):
         right.addWidget(self.scale_zoom)
         return w
 
-    # ---------------------------------------------------------------- резкость
-    def _build_sharp_tab(self) -> QWidget:
+    # ---------------------------------------------------------------- обработка
+    def _build_processing_tab(self) -> QWidget:
         w = QWidget()
-        root = QVBoxLayout(w)
-        top = QHBoxLayout()
+        root = QHBoxLayout(w)
+        left = QVBoxLayout()
+        left_w = QWidget()
+        left_w.setFixedWidth(330)
+        left_w.setLayout(left)
+        root.addWidget(left_w)
+
+        bg = QGroupBox("Фон за пределами поля зрения")
+        bl = QVBoxLayout(bg)
+        self.bg_toggle = ToggleGroup([(k, v) for k, v in BACKGROUND_COLORS.items()])
+        self.bg_toggle.valueChanged.connect(self._bg_clicked)
+        bl.addWidget(self.bg_toggle)
+        bl.addWidget(_note("Для всей партии. Цвет шкалы «Автоматически»: на черном фоне — белая, "
+                           "на белом — черная."))
+        left.addWidget(bg)
+
+        sh = QGroupBox("Резкость")
+        sl = QVBoxLayout(sh)
         self.sharp_enabled = QCheckBox("Повысить резкость")
         self.sharp_enabled.toggled.connect(self._changed)
-        top.addWidget(self.sharp_enabled)
-        top.addSpacing(20)
-        top.addWidget(QLabel("0 %"))
+        sl.addWidget(self.sharp_enabled)
+        row = QHBoxLayout()
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 100)
         self.slider.setTickInterval(25)
         self.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.slider.setPageStep(10)
-        self.slider.setMinimumWidth(300)
         self.slider.valueChanged.connect(self._changed)
-        top.addWidget(self.slider, 1)
-        top.addWidget(QLabel("+100 %"))
+        row.addWidget(self.slider, 1)
         self.slider_val = QLabel()
-        self.slider_val.setMinimumWidth(60)
-        self.slider_val.setStyleSheet("font-weight: 600;")
-        top.addWidget(self.slider_val)
-        root.addLayout(top)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Метод:"))
-        self.method_combo = QComboBox()
-        for k, sh in SHARPENERS.items():
-            self.method_combo.addItem(sh.title, k)
-        self.method_combo.currentIndexChanged.connect(self._changed)
-        row.addWidget(self.method_combo)
-        row.addStretch(1)
-        root.addLayout(row)
-        root.addWidget(_note("Резкость применяется после обрезки и до нанесения шкалы. "
-                             "Ниже — фрагмент текущего фото в масштабе 100 % (из оригинала). "
-                             "Щелкните по миниатюре, чтобы выбрать другой участок."))
-        cmp = QHBoxLayout()
-        self.pick = _PickLabel()
-        self.pick.setFixedSize(220, 220)
-        self.pick.setStyleSheet("background: #1b1c1f; border-radius: 8px;")
-        self.pick.picked.connect(self._pick_fragment)
-        cmp.addWidget(self.pick, 0, Qt.AlignmentFlag.AlignTop)
-        for title, attr in (("Исходное", "frag_before"), ("После обработки", "frag_after")):
-            col = QVBoxLayout()
-            t = QLabel(title)
-            t.setStyleSheet("font-weight: 600;")
-            col.addWidget(t)
-            lbl = QLabel()
-            lbl.setFixedSize(FRAGMENT, FRAGMENT)
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("background: #1b1c1f; border-radius: 8px;")
-            col.addWidget(lbl)
-            col.addStretch(1)
-            setattr(self, attr, lbl)
-            cmp.addLayout(col)
-        cmp.addStretch(1)
-        root.addLayout(cmp)
-        root.addStretch(1)
+        self.slider_val.setMinimumWidth(44)
+        self.slider_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.slider_val.setStyleSheet("font-weight: 600; font-size: 12pt;")
+        row.addWidget(self.slider_val)
+        sl.addLayout(row)
+        ticks = QHBoxLayout()
+        for text, align in (("0", Qt.AlignmentFlag.AlignLeft), ("50", Qt.AlignmentFlag.AlignHCenter),
+                            ("100", Qt.AlignmentFlag.AlignRight)):
+            t = QLabel(text)
+            t.setObjectName("Hint")
+            t.setAlignment(align)
+            ticks.addWidget(t, 1)
+        ticks.addSpacing(50)
+        sl.addLayout(ticks)
+        sl.addWidget(_note("50 — рекомендуемое значение, 100 — сильная резкость. Резкость применяется "
+                           "только к изображению внутри поля зрения; фон и шкала остаются четкими."))
+        left.addWidget(sh)
+        left.addWidget(_note("Просмотр справа — текущее фото из оригинала. «100 %» — пиксель в пиксель. "
+                             "Удерживайте «Оригинал» или пробел, чтобы временно увидеть исходное."))
+        left.addStretch(1)
+
+        right = QVBoxLayout()
+        root.addLayout(right, 1)
+        bar = QHBoxLayout()
+        self.ba_toggle = ToggleGroup([("before", "До"), ("after", "После")])
+        self.ba_toggle.setFixedWidth(180)
+        self.ba_toggle.set_value("after")
+        self.ba_toggle.valueChanged.connect(self._ba_clicked)
+        bar.addWidget(self.ba_toggle)
+        self.zoom100_btn = QPushButton("100 %")
+        self.zoom100_btn.setObjectName("Toggle")
+        self.zoom100_btn.setCheckable(True)
+        self.zoom100_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.zoom100_btn.setToolTip("Пиксель в пиксель. Перетаскивайте мышью, чтобы смотреть другие участки.")
+        self.zoom100_btn.toggled.connect(self._zoom100)
+        bar.addWidget(self.zoom100_btn)
+        bar.addStretch(1)
+        self.hold_btn = QPushButton("Удерживайте — оригинал")
+        self.hold_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.hold_btn.pressed.connect(lambda: self.sharp_view.hold_original(True))
+        self.hold_btn.released.connect(lambda: self.sharp_view.hold_original(False))
+        bar.addWidget(self.hold_btn)
+        right.addLayout(bar)
+        self.sharp_view = SharpenPreview()
+        self.sharp_view.setMinimumSize(480, 420)
+        right.addWidget(self.sharp_view, 1)
         return w
+
+    def _bg_clicked(self, key: str) -> None:
+        self.bg_toggle.set_value(key)
+        self._changed()
+
+    def _ba_clicked(self, key: str) -> None:
+        self.ba_toggle.set_value(key)
+        self.sharp_view.set_show_after(key == "after")
+
+    def _zoom100(self, on: bool) -> None:
+        self.sharp_view.zoom_100(on)
+
+    def keyPressEvent(self, e: QKeyEvent) -> None:  # noqa: N802
+        if e.key() == Qt.Key.Key_Space and self.tabs.currentIndex() == TAB_PROCESSING:
+            if not e.isAutoRepeat():
+                self.sharp_view.hold_original(True)
+            return
+        super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e: QKeyEvent) -> None:  # noqa: N802
+        if e.key() == Qt.Key.Key_Space and self.tabs.currentIndex() == TAB_PROCESSING:
+            if not e.isAutoRepeat():
+                self.sharp_view.hold_original(False)
+            return
+        super().keyReleaseEvent(e)
 
     # ---------------------------------------------------------------- экспорт
     def _build_export_tab(self) -> QWidget:
@@ -291,12 +323,12 @@ class SettingsDialog(QDialog):
             cal = s.scale.calibration[m.key]
             self.table.item(row, 1).setText(cal.label)
             self._frac_spins[m.key].setValue(cal.fraction * 100)
-        for combo, val in ((self.pos_combo, s.scale.position), (self.style_combo, s.scale.style),
+        for combo, val in ((self.pos_combo, s.scale.position), (self.color_combo, s.scale.color_mode),
                            (self.size_combo, s.scale.size), (self.margin_combo, s.scale.margin)):
             combo.setCurrentIndex(max(0, combo.findData(val)))
+        self.bg_toggle.set_value(s.background_color)
         self.sharp_enabled.setChecked(s.sharpen.enabled)
         self.slider.setValue(s.sharpen.amount)
-        self.method_combo.setCurrentIndex(max(0, self.method_combo.findData(s.sharpen.method)))
         self.fmt_combo.setCurrentIndex(max(0, self.fmt_combo.findData(s.export.format)))
         self.quality_spin.setValue(s.export.jpeg_quality)
         self._update_enabled()
@@ -310,23 +342,22 @@ class SettingsDialog(QDialog):
                 label = s.scale.calibration[m.key].label
             s.scale.calibration[m.key] = CalibrationEntry(label, round(self._frac_spins[m.key].value() / 100, 6))
         s.scale.position = self.pos_combo.currentData()
-        s.scale.style = self.style_combo.currentData()
+        s.scale.color_mode = self.color_combo.currentData()
         s.scale.size = self.size_combo.currentData()
         s.scale.margin = self.margin_combo.currentData()
         s.sharpen.enabled = self.sharp_enabled.isChecked()
         s.sharpen.amount = self.slider.value()
-        s.sharpen.method = self.method_combo.currentData()
+        s.background_color = self.bg_toggle.value() or "black"
         s.export.format = self.fmt_combo.currentData()
         s.export.jpeg_quality = self.quality_spin.value()
 
     def _update_enabled(self) -> None:
         on = self.scale_enabled.isChecked()
-        for wdg in (self.table, self.pos_combo, self.style_combo, self.size_combo, self.margin_combo):
+        for wdg in (self.table, self.color_combo, self.pos_combo, self.size_combo, self.margin_combo):
             wdg.setEnabled(on)
         son = self.sharp_enabled.isChecked()
         self.slider.setEnabled(son)
-        self.method_combo.setEnabled(son)
-        self.slider_val.setText(f"+{self.slider.value()} %" if son else "выкл.")
+        self.slider_val.setText(str(self.slider.value()) if son else "выкл.")
         self.quality_spin.setEnabled(self.fmt_combo.currentData() == "jpg")
 
     def _changed(self, *_args) -> None:
@@ -347,13 +378,15 @@ class SettingsDialog(QDialog):
         self._changed()
 
     def _tab_changed(self, i: int) -> None:
-        if i == 1:
+        if i == TAB_PROCESSING:
             self._ensure_full_crop()
             self._update_sharp_preview()
+        elif i == TAB_SCALE:
+            self._update_scale_preview()
 
     def accept(self) -> None:
         self._read_values()
-        self.ctrl.set_settings(self.s, "Изменение настроек")
+        self.ctrl.set_settings(self.s, describe_change(self.ctrl.settings, self.s))
         super().accept()
 
     # ---------------------------------------------------------------- preview
@@ -374,10 +407,11 @@ class SettingsDialog(QDialog):
             with Image.open(path) as im:
                 img = im.convert("RGB")
             c = self._photo_circle(img.width, img.height, p.width)
-            base, _mask = crop_circle(img, c)
+            base, mask = crop_square(img, c)
             if base.width > PREVIEW_SIDE:
                 base = base.resize((PREVIEW_SIDE, PREVIEW_SIDE), Image.Resampling.LANCZOS)
-            self._base = base
+                mask = mask.resize((PREVIEW_SIDE, PREVIEW_SIDE), Image.Resampling.BILINEAR)
+            self._base, self._base_mask = base, mask
         except Exception:
             log.exception("Preview для настроек не построен")
             self._base = None
@@ -385,10 +419,10 @@ class SettingsDialog(QDialog):
     def _update_scale_preview(self) -> None:
         if self._base is None:
             return
-        img = self._base
+        img = apply_mask(self._base, self._base_mask, self.s.background_color)
         mag = self.preview_mag.currentData()
         if self.s.scale.enabled:
-            img = draw_scale_bar(img, self.s.scale.calibration[mag], self.s.scale)
+            img = draw_scale_bar(img, self.s.scale.calibration[mag], self.s.scale, self.s.background_color)
         pm = QPixmap.fromImage(pil_to_qimage(img))
         side = min(self.scale_preview.width(), self.scale_preview.height()) - 12
         side = max(200, side)
@@ -411,43 +445,23 @@ class SettingsDialog(QDialog):
         self._update_scale_preview()
 
     def _ensure_full_crop(self) -> None:
-        if self._full_crop is not None or self.photo is None or self.photo.missing:
+        if self._full_loaded or self.photo is None or self.photo.missing:
             return
+        self._full_loaded = True
         self.setCursor(Qt.CursorShape.WaitCursor)
         try:
             src = load_oriented(self.photo.source_path).image
             c = self.photo.circle or default_circle(src.width, src.height)
-            self._full_crop, _ = crop_circle(src, c)
-            thumb = self._full_crop.copy()
-            thumb.thumbnail((210, 210))
-            self.pick.setPixmap(QPixmap.fromImage(pil_to_qimage(thumb)))
+            crop, mask = crop_square(src, c)
+            self.sharp_view.set_background(self.s.background_color)
+            self.sharp_view.set_settings(self.s.sharpen)
+            self.sharp_view.set_source(crop, mask)
         except Exception:
-            log.exception("Фрагмент 100% не построен")
-            self.frag_before.setText("Не удалось открыть оригинал")
+            log.exception("Просмотр резкости не построен")
+            self.sharp_view.show_message("Не удалось открыть оригинал")
         finally:
             self.unsetCursor()
 
-    def _pick_fragment(self, fx: float, fy: float) -> None:
-        self._frag_center = (fx, fy)
-        self._update_sharp_preview()
-
     def _update_sharp_preview(self) -> None:
-        if self._full_crop is None:
-            return
-        img = self._full_crop
-        W = img.width
-        half = FRAGMENT // 2
-        cx = int(self._frag_center[0] * W)
-        cy = int(self._frag_center[1] * W)
-        cx = min(max(cx, half), W - half)
-        cy = min(max(cy, half), W - half)
-        pad = 4      # резкость считается по соседям — берем с запасом
-        box = (cx - half - pad, cy - half - pad, cx + half + pad, cy + half + pad)
-        region = img.crop(box)
-        after = sharpen(region, self.s.sharpen)
-        inner = (pad, pad, pad + FRAGMENT, pad + FRAGMENT)
-        self.frag_before.setPixmap(QPixmap.fromImage(pil_to_qimage(region.crop(inner))))
-        self.frag_after.setPixmap(QPixmap.fromImage(pil_to_qimage(after.crop(inner))))
-        self.pick.frac_rect = ((cx - half) / W, (cy - half) / W, FRAGMENT / W, FRAGMENT / W)
-        self.pick.update()
-
+        self.sharp_view.set_background(self.s.background_color)
+        self.sharp_view.set_settings(self.s.sharpen)

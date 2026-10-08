@@ -136,11 +136,12 @@ class PhotoItem:
 # ---------------------------------------------------------------- настройки
 
 SCALE_POSITIONS = {"right": "Справа снизу", "left": "Слева снизу"}
-SCALE_STYLES = {
-    "white": "Белая с темной обводкой",
-    "black": "Черная со светлой обводкой",
-    "auto": "Автоматически",
+SCALE_COLORS = {
+    "auto": "Автоматически (по цвету фона)",
+    "white": "Белый",
+    "black": "Черный",
 }
+BACKGROUND_COLORS = {"black": "Черный", "white": "Белый"}
 SCALE_SIZES = {"small": "Маленький", "normal": "Обычный", "large": "Крупный"}
 SCALE_MARGINS = {"small": "Меньше", "normal": "Обычный", "large": "Больше"}
 
@@ -160,7 +161,7 @@ class ScaleSettings:
     enabled: bool = True
     calibration: dict[str, CalibrationEntry] = field(default_factory=default_calibration)
     position: str = "right"
-    style: str = "white"
+    color_mode: str = "auto"    # auto: черный фон → белая шкала, белый фон → черная
     size: str = "normal"
     margin: str = "normal"
 
@@ -169,7 +170,7 @@ class ScaleSettings:
             "enabled": self.enabled,
             "calibration": {k: [v.label, v.fraction] for k, v in self.calibration.items()},
             "position": self.position,
-            "style": self.style,
+            "color_mode": self.color_mode,
             "size": self.size,
             "margin": self.margin,
         }
@@ -192,8 +193,11 @@ class ScaleSettings:
                     pass
         if d.get("position") in SCALE_POSITIONS:
             s.position = d["position"]
-        if d.get("style") in SCALE_STYLES:
-            s.style = d["style"]
+        if d.get("color_mode") in SCALE_COLORS:
+            s.color_mode = d["color_mode"]
+        elif d.get("style") == "black":
+            # старые проекты: «white» был значением по умолчанию → теперь «auto»
+            s.color_mode = "black"
         if d.get("size") in SCALE_SIZES:
             s.size = d["size"]
         if d.get("margin") in SCALE_MARGINS:
@@ -204,8 +208,8 @@ class ScaleSettings:
 @dataclass
 class SharpenSettings:
     enabled: bool = True
-    amount: int = 50            # проценты: 0 … 100  (Pillow factor = 1 + amount/100)
-    method: str = "pillow"
+    amount: int = 50            # пользовательская шкала 0 … 100 (см. core/sharpness.py)
+    method: str = "usm"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -219,7 +223,9 @@ class SharpenSettings:
                 s.amount = max(0, min(100, int(d.get("amount", s.amount))))
             except (TypeError, ValueError):
                 pass
-            s.method = str(d.get("method", s.method))
+            method = str(d.get("method", s.method))
+            # прежний слабый алгоритм Pillow Sharpness больше не используется
+            s.method = "usm" if method == "pillow" else method
         return s
 
 
@@ -251,6 +257,7 @@ class ProcessingSettings:
     scale: ScaleSettings = field(default_factory=ScaleSettings)
     sharpen: SharpenSettings = field(default_factory=SharpenSettings)
     export: ExportSettings = field(default_factory=ExportSettings)
+    background_color: str = "black"     # фон за пределами поля зрения: black / white
 
     def copy(self) -> "ProcessingSettings":
         return copy.deepcopy(self)
@@ -260,6 +267,7 @@ class ProcessingSettings:
             "scale": self.scale.to_dict(),
             "sharpen": self.sharpen.to_dict(),
             "export": self.export.to_dict(),
+            "background_color": self.background_color,
         }
 
     @staticmethod
@@ -269,6 +277,8 @@ class ProcessingSettings:
             scale=ScaleSettings.from_dict(d.get("scale")),
             sharpen=SharpenSettings.from_dict(d.get("sharpen")),
             export=ExportSettings.from_dict(d.get("export")),
+            background_color=d.get("background_color") if d.get("background_color") in BACKGROUND_COLORS
+            else "black",
         )
 
 
@@ -284,6 +294,8 @@ class Project:
     stage: int = 0                  # 0 — фотографии, 1 — поле зрения, 2 — готово
     finished: bool = False          # экспорт выполнен и после него ничего не меняли
     name_list: list[str] = field(default_factory=list)
+    # фото, убранные из партии (файлы на диске не тронуты) — не возвращать при пересканировании
+    removed_paths: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -294,6 +306,7 @@ class Project:
             "stage": self.stage,
             "finished": self.finished,
             "name_list": list(self.name_list),
+            "removed_paths": list(self.removed_paths),
             "settings": self.settings.to_dict(),
             "photos": [p.to_dict() for p in self.photos],
         }
@@ -307,6 +320,7 @@ class Project:
             stage=int(d.get("stage", 0)) if str(d.get("stage", 0)).isdigit() else 0,
             finished=bool(d.get("finished", False)),
             name_list=[str(x) for x in d.get("name_list", []) if str(x).strip()],
+            removed_paths=[str(x) for x in d.get("removed_paths", []) if str(x).strip()],
         )
         photos = []
         for pd in d.get("photos", []):

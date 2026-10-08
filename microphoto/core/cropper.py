@@ -1,4 +1,4 @@
-"""Квадратная обрезка по полю зрения и черный фон вне круга."""
+"""Квадратная обрезка по полю зрения и однотонный фон (черный или белый) вне круга."""
 
 from __future__ import annotations
 
@@ -9,6 +9,12 @@ from PIL import Image
 from .models import Circle
 
 _SHIFT = 4      # субпиксельная точность cv2.circle (1/16 пикселя)
+
+BACKGROUND_RGB = {"black": (0, 0, 0), "white": (255, 255, 255)}
+
+
+def background_rgb(name: str) -> tuple[int, int, int]:
+    return BACKGROUND_RGB.get(name, (0, 0, 0))
 
 
 def circle_mask(side: int, cx: float, cy: float, r: float) -> Image.Image:
@@ -27,20 +33,28 @@ def crop_box(circle: Circle) -> tuple[int, int, int, int, int]:
     return x1, y1, x1 + side, y1 + side, side
 
 
-def crop_circle(img: Image.Image, circle: Circle) -> tuple[Image.Image, Image.Image]:
-    """Квадрат 2R×2R с кругом поля зрения. Там, где нет данных исходника, — черное.
+def crop_square(img: Image.Image, circle: Circle) -> tuple[Image.Image, Image.Image]:
+    """Квадрат 2R×2R без маски (реальные пиксели снимка) и маска круга.
 
-    Возвращает (изображение, маска круга).
+    Там, где кадр не покрывает квадрат, Image.crop дополняет нулями (черным).
     """
     x1, y1, x2, y2, side = crop_box(circle)
-    # Image.crop сам дополняет нулями (черным) области за пределами кадра
     crop = img.crop((x1, y1, x2, y2))
     if crop.mode != "RGB":
         crop = crop.convert("RGB")
     mask = circle_mask(side, circle.x - x1, circle.y - y1, circle.r)
-    return apply_mask(crop, mask), mask
+    return crop, mask
 
 
-def apply_mask(img: Image.Image, mask: Image.Image) -> Image.Image:
-    black = Image.new("RGB", img.size, (0, 0, 0))
-    return Image.composite(img, black, mask)
+def crop_circle(img: Image.Image, circle: Circle, background: str = "black") -> tuple[Image.Image, Image.Image]:
+    """Квадрат 2R×2R с кругом поля зрения и заданным фоном вне круга.
+
+    Возвращает (изображение, маска круга).
+    """
+    crop, mask = crop_square(img, circle)
+    return apply_mask(crop, mask, background), mask
+
+
+def apply_mask(img: Image.Image, mask: Image.Image, background: str = "black") -> Image.Image:
+    bg = Image.new("RGB", img.size, background_rgb(background))
+    return Image.composite(img, bg, mask)

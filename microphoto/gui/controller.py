@@ -89,8 +89,27 @@ class SettingsCommand(QUndoCommand):
         self.ctrl._apply_settings(self.old)
 
 
+class RemovePhotosCommand(QUndoCommand):
+    """Убрать фото из партии (файлы на диске не трогаются). Undo возвращает их
+    на прежние места со всей разметкой. Несколько фото — одна запись в истории."""
+
+    def __init__(self, ctrl: "ProjectController", indices: list[int]) -> None:
+        n = len(indices)
+        super().__init__("Убрать фото из проекта" if n == 1 else f"Убрать {n} фото из проекта")
+        self.ctrl = ctrl
+        self.items = [(i, ctrl.photos[i]) for i in sorted(indices)]
+        self.prev_current = ctrl.current_index
+
+    def redo(self) -> None:
+        self.ctrl._remove_items([i for i, _ in self.items])
+
+    def undo(self) -> None:
+        self.ctrl._insert_items(self.items, self.prev_current)
+
+
 class ProjectController(QObject):
     projectLoaded = Signal()
+    photoListChanged = Signal()     # фото убраны из партии / возвращены (индексы сдвинулись)
     photoChanged = Signal(int)
     currentChanged = Signal(int)
     settingsChanged = Signal()
@@ -135,7 +154,7 @@ class ProjectController(QObject):
     def open_folder(self, folder: str, saved: Project | None = None) -> None:
         if saved is not None:
             project = saved
-            project.photos = merge_rescan(saved.photos, folder)
+            project.photos = merge_rescan(saved.photos, folder, saved.removed_paths)
             project.source_dir = folder
             project.current_index = min(project.current_index, max(0, len(project.photos) - 1))
         else:
@@ -227,6 +246,45 @@ class ProjectController(QObject):
         self.project.finished = False
         if focus is not None and focus != self.project.current_index:
             self.set_current(focus)
+        self.schedule_save()
+
+    # --------------------------------------------- состав партии
+    def remove_photos(self, indices: list[int]) -> int:
+        """Убрать фото из партии (через Undo). Возвращает число убранных."""
+        n = len(self.photos)
+        indices = sorted({i for i in indices if 0 <= i < n})
+        if not indices or len(indices) >= n:
+            return 0
+        self.undo_stack.push(RemovePhotosCommand(self, indices))
+        return len(indices)
+
+    def _remove_items(self, indices: list[int]) -> None:
+        cur = self.project.current_index
+        removed_set = set(indices)
+        for i in reversed(indices):
+            p = self.photos.pop(i)
+            if p.source_path not in self.project.removed_paths:
+                self.project.removed_paths.append(p.source_path)
+        if cur in removed_set:
+            # ближайшая оставшаяся: следующая за первой убранной, иначе последняя
+            new_cur = indices[0]
+        else:
+            new_cur = cur - sum(1 for i in indices if i < cur)
+        self.project.current_index = max(0, min(new_cur, len(self.photos) - 1))
+        self._after_list_change()
+
+    def _insert_items(self, items: list[tuple[int, PhotoItem]], current: int) -> None:
+        for i, p in items:
+            self.photos.insert(i, p)
+            if p.source_path in self.project.removed_paths:
+                self.project.removed_paths.remove(p.source_path)
+        self.project.current_index = max(0, min(current, len(self.photos) - 1))
+        self._after_list_change()
+
+    def _after_list_change(self) -> None:
+        self.project.finished = False
+        self.photoListChanged.emit()
+        self.currentChanged.emit(self.project.current_index)
         self.schedule_save()
 
     def inherit_into(self, index: int) -> None:

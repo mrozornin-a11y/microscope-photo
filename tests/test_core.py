@@ -205,3 +205,97 @@ def test_load_names(tmp_path):
         ws.append([v])
     wb.save(tmp_path / "c.xlsx")
     assert load_names(tmp_path / "c.xlsx") == ["A-1", "A-2", "15"]
+
+
+# ------------------------------------------------------------------ фон, цвет шкалы, резкость
+def test_white_background_is_pure_white():
+    img = Image.new("RGB", (400, 400), (90, 120, 60))
+    out, _ = crop_circle(img, Circle(200, 200, 150), "white")
+    assert out.getpixel((1, 1)) == (255, 255, 255)
+    assert out.getpixel((150, 150)) == (90, 120, 60)
+
+
+def test_scale_color_auto_follows_background():
+    from microphoto.core.scale_bar import scale_color
+
+    s = ProcessingSettings().scale
+    assert s.color_mode == "auto"
+    assert scale_color(s, "black") == "white"
+    assert scale_color(s, "white") == "black"
+    s.color_mode = "white"                        # выбран вручную — фон не влияет
+    assert scale_color(s, "white") == "white"
+
+
+def test_old_settings_migrate():
+    s = ProcessingSettings.from_dict({"scale": {"style": "white"}, "sharpen": {"method": "pillow"}})
+    assert s.scale.color_mode == "auto" and s.sharpen.method == "usm" and s.background_color == "black"
+    s2 = ProcessingSettings.from_dict(ProcessingSettings(background_color="white").to_dict())
+    assert s2.background_color == "white"
+
+
+def test_usm_params_monotonic_and_radius_limited():
+    from microphoto.core.sharpness import usm_params
+
+    amounts = [usm_params(v, 2600).amount for v in (0, 25, 50, 75, 100)]
+    assert amounts[0] == 0 and amounts == sorted(amounts)
+    assert usm_params(50, 12000).sigma <= 2.0      # огромный кадр — радиус ограничен
+    assert usm_params(50, 300).sigma >= 0.7
+
+
+def test_sharpen_stronger_than_old_pillow():
+    from PIL import ImageEnhance
+
+    from microphoto.core.models import SharpenSettings
+    from microphoto.core.sharpness import sharpen
+
+    rng = np.random.default_rng(1)
+    base = np.full((300, 300), 120, np.float32)
+    base[:, 150:] = 160
+    base += rng.normal(0, 6, base.shape)
+    import cv2
+
+    img = Image.fromarray(np.clip(cv2.GaussianBlur(base, (0, 0), 1.5), 0, 255).astype(np.uint8)).convert("RGB")
+
+    def edge(im):
+        # профиль, усредненный по строкам (шум усредняется) — крутизна границы
+        prof = np.asarray(im.convert("L"), np.float32)[:, 140:160].mean(axis=0)
+        return float(np.abs(np.diff(prof)).max())
+
+    orig = edge(img)
+    old = edge(ImageEnhance.Sharpness(img).enhance(1.5))
+    new50 = edge(sharpen(img, SharpenSettings(True, 50), diameter=2600))
+    new100 = edge(sharpen(img, SharpenSettings(True, 100), diameter=2600))
+    assert old - orig < 0.5                 # прежний алгоритм границу почти не менял
+    assert new50 > orig + 0.8 and new100 > new50 + 1.5
+
+
+def test_scale_bar_not_sharpened(tmp_path):
+    """Шкала рисуется после резкости: ее пиксели одинаковы при любой резкости."""
+    arr = make_field(900, 900, 450, 450, 420, seed=2)
+    p = tmp_path / "a.jpg"
+    save_photo(p, arr, datetime(2025, 1, 1))
+    item = photo(source_path=str(p), circle=Circle(450, 450, 420))
+    s0, s1 = ProcessingSettings(), ProcessingSettings()
+    s0.sharpen.enabled = False
+    s1.sharpen.amount = 100
+    a0 = np.asarray(render(item, s0).image)
+    a1 = np.asarray(render(item, s1).image)
+    white0 = (a0 == 255).all(axis=2)
+    assert white0[700:, 500:].sum() > 100                      # шкала есть
+    assert (a1[white0] == 255).all()                           # и не изменилась
+    assert not np.array_equal(a0[300:500, 300:500], a1[300:500, 300:500])   # а снимок — резче
+
+
+def test_removed_photos_do_not_come_back(tmp_path):
+    from microphoto.core.scanner import merge_rescan
+
+    arr = make_field(200, 200, 100, 100, 80)
+    for i in range(3):
+        save_photo(tmp_path / f"IMG_{i}.JPG", arr, datetime(2025, 1, 1, 10, i))
+    items = scan_folder(tmp_path)
+    removed = [items[1].source_path]
+    saved = [items[0], items[2]]
+    names = [p.file_name for p in merge_rescan(saved, tmp_path, removed)]
+    assert names == ["IMG_0.JPG", "IMG_2.JPG"]
+    pr = Project(source_dir=str(tmp_path), photos=saved, removed_paths=removed)
+    assert Project.from_dict(pr.to_dict()).removed_paths == removed

@@ -63,7 +63,21 @@ class MainWindow(QMainWindow):
         lp.setContentsMargins(0, 6, 0, 6)
         self.photo_list = PhotoListView(self.ctrl, self.media)
         self.photo_list.photoActivated.connect(self.goto_photo)
+        self.photo_list.removeRequested.connect(self.remove_photos)
         lp.addWidget(self.photo_list)
+        self.remove_btn = QPushButton("Удалить из списка")
+        self.remove_btn.setObjectName("Link")
+        self.remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remove_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.remove_btn.setToolTip("Убрать выбранные фото из этой партии (Delete).\n"
+                                   "Файлы на диске не удаляются. Вернуть — Ctrl+Z.\n"
+                                   "Несколько фото — Ctrl или Shift + щелчок.")
+        self.remove_btn.clicked.connect(lambda: self.remove_photos(self.photo_list.selected_rows()))
+        rm_row = QHBoxLayout()
+        rm_row.setContentsMargins(14, 0, 0, 0)
+        rm_row.addWidget(self.remove_btn)
+        rm_row.addStretch(1)
+        lp.addLayout(rm_row)
         body.addWidget(list_panel)
 
         self.pages = QStackedWidget()
@@ -82,6 +96,7 @@ class MainWindow(QMainWindow):
         self.statusBar().setSizeGripEnabled(False)
 
         self.ctrl.currentChanged.connect(lambda _i: self._update_nav())
+        self.ctrl.photoListChanged.connect(self._update_nav)
         self.ctrl.photoChanged.connect(lambda _i: self._update_nav())
         self.ctrl.projectLoaded.connect(self._on_project_loaded)
 
@@ -188,6 +203,7 @@ class MainWindow(QMainWindow):
         sc(Qt.Key.Key_Enter, self.go_accept)
         sc(Qt.Key.Key_Left, self.go_prev)
         sc(Qt.Key.Key_Right, self.go_next)
+        sc(Qt.Key.Key_Delete, lambda: self.remove_photos(self.photo_list.selected_rows()))
         for n in range(1, 5):
             sc(getattr(Qt.Key, f"Key_{n}"), lambda n=n: self._digit(n))
         undo = QAction("Отменить", self)
@@ -392,13 +408,30 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self.ctrl, self.media, tab if isinstance(tab, int) else 0, self)
         dlg.exec()
 
+    def remove_photos(self, rows: list[int]) -> None:
+        """Убрать фото из партии. Файлы на диске остаются; вернуть — Ctrl+Z."""
+        if not self._in_workspace() or self.final_page.is_busy() or not rows:
+            return
+        self._commit_page()
+        if len(rows) >= len(self.ctrl.photos):
+            QMessageBox.information(self, "Убрать из проекта",
+                                    "Нельзя убрать все фотографии партии.\n"
+                                    "Чтобы закончить работу с папкой, выберите «Начать заново».")
+            return
+        n = self.ctrl.remove_photos(rows)
+        if n:
+            what = "1 фото" if n == 1 else f"{n} фото"
+            self.statusBar().showMessage(
+                f"Убрано из проекта: {what}. Файлы на диске не тронуты. Вернуть — Ctrl+Z", 6000)
+
     def _goto_photo_stage(self, index: int, stage: int) -> None:
         self.set_stage(stage)
         self.ctrl.set_current(index)
 
     def _set_busy(self, busy: bool) -> None:
         """Во время экспорта разметку менять нельзя (просматривать — можно)."""
-        for w in (self.step_bar, self.settings_btn, self.folder_btn, self.undo_btn, self.redo_btn):
+        for w in (self.step_bar, self.settings_btn, self.folder_btn, self.undo_btn, self.redo_btn,
+                  self.remove_btn):
             w.setEnabled(not busy)
         if not busy:
             self.undo_btn.setEnabled(self.ctrl.undo_stack.canUndo())

@@ -33,13 +33,20 @@ def scan_folder(folder: str | Path) -> list[PhotoItem]:
     return items
 
 
-def merge_rescan(saved: list[PhotoItem], folder: str | Path) -> list[PhotoItem]:
+def path_key(path: str | Path) -> str:
+    return Path(path).resolve().as_posix().casefold()
+
+
+def merge_rescan(saved: list[PhotoItem], folder: str | Path,
+                 removed: list[str] | None = None) -> list[PhotoItem]:
     """Объединяет сохраненную разметку с текущим содержимым папки.
 
     Известные файлы сохраняют свою разметку, новые добавляются по дате,
     пропавшие помечаются как отсутствующие (разметка не теряется).
+    Фото, убранные пользователем из партии (removed), не возвращаются.
     """
-    by_path = {Path(p.source_path).resolve().as_posix().casefold(): p for p in saved}
+    removed_keys = {path_key(p) for p in (removed or [])}
+    by_path = {path_key(p.source_path): p for p in saved}
     result: list[PhotoItem] = []
     seen = set()
     try:
@@ -47,12 +54,14 @@ def merge_rescan(saved: list[PhotoItem], folder: str | Path) -> list[PhotoItem]:
     except OSError:
         fresh = []
     for item in fresh:
-        key = Path(item.source_path).resolve().as_posix().casefold()
+        key = path_key(item.source_path)
+        if key in removed_keys:
+            continue
         seen.add(key)
         old = by_path.get(key)
         result.append(old if old is not None else item)
     for key, old in by_path.items():
-        if key not in seen:
+        if key not in seen and key not in removed_keys:
             old.missing = True
             result.append(old)
     # Сохраняем прежний порядок известных файлов; новые — по времени.
