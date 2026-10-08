@@ -60,6 +60,11 @@ class PhotoItem:
     capture_from_exif: bool = False
     width: int = 0                            # размер после поворота по EXIF
     height: int = 0
+    # «Отпечаток» исходного файла: разметка из сохраненного проекта переносится
+    # только на тот же самый файл (а не на другой файл с тем же именем)
+    file_size: int = 0
+    file_mtime_ns: int = 0
+    file_head: str = ""                       # sha1 первых 64 КБ файла
 
     sample_name: str = ""
     light_mode: str | None = None             # ключ из LIGHT_MODES
@@ -130,7 +135,16 @@ class PhotoItem:
             except (TypeError, ValueError):
                 item.photo_number = None
         item.sample_name = str(item.sample_name or "")
+        try:
+            item.file_size = int(item.file_size or 0)
+            item.file_mtime_ns = int(item.file_mtime_ns or 0)
+        except (TypeError, ValueError):
+            item.file_size, item.file_mtime_ns = 0, 0
+        item.file_head = str(item.file_head or "")
         return item
+
+    def has_fingerprint(self) -> bool:
+        return self.file_size > 0 and self.file_mtime_ns > 0
 
 
 # ---------------------------------------------------------------- настройки
@@ -296,6 +310,9 @@ class Project:
     name_list: list[str] = field(default_factory=list)
     # фото, убранные из партии (файлы на диске не тронуты) — не возвращать при пересканировании
     removed_paths: list[str] = field(default_factory=list)
+    # отпечатки убранных файлов [размер, mtime_ns]: другой файл с тем же именем — уже новое фото
+    removed_fp: dict[str, list[int]] = field(default_factory=dict)
+    saved_at: float = 0.0           # время последнего сохранения (unix)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -307,6 +324,8 @@ class Project:
             "finished": self.finished,
             "name_list": list(self.name_list),
             "removed_paths": list(self.removed_paths),
+            "removed_fp": dict(self.removed_fp),
+            "saved_at": self.saved_at,
             "settings": self.settings.to_dict(),
             "photos": [p.to_dict() for p in self.photos],
         }
@@ -322,6 +341,17 @@ class Project:
             name_list=[str(x) for x in d.get("name_list", []) if str(x).strip()],
             removed_paths=[str(x) for x in d.get("removed_paths", []) if str(x).strip()],
         )
+        rfp = d.get("removed_fp")
+        if isinstance(rfp, dict):
+            for k, v in rfp.items():
+                try:
+                    p.removed_fp[str(k)] = [int(v[0]), int(v[1])]
+                except (TypeError, ValueError, IndexError):
+                    pass
+        try:
+            p.saved_at = float(d.get("saved_at", 0) or 0)
+        except (TypeError, ValueError):
+            p.saved_at = 0.0
         photos = []
         for pd in d.get("photos", []):
             if isinstance(pd, dict) and pd.get("source_path"):

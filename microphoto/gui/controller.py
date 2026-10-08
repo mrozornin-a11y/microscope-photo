@@ -151,16 +151,19 @@ class ProjectController(QObject):
         return bool(self.project.photos)
 
     # ------------------------------------------------------- загрузка
-    def open_folder(self, folder: str, saved: Project | None = None) -> None:
+    def open_folder(self, folder: str, saved: Project | None = None, prefill: bool = True) -> None:
+        """saved — сохраненная разметка папки; prefill — подставить в первое фото
+        последние освещение/увеличение (только для папки, открытой впервые)."""
         if saved is not None:
             project = saved
-            project.photos = merge_rescan(saved.photos, folder, saved.removed_paths)
+            project.photos = merge_rescan(saved.photos, folder, saved.removed_paths,
+                                          saved.saved_at or None, saved.removed_fp)
             project.source_dir = folder
             project.current_index = min(project.current_index, max(0, len(project.photos) - 1))
         else:
             project = Project(source_dir=folder, settings=self.app_settings.processing())
             project.photos = scan_folder(folder)
-            if project.photos:
+            if project.photos and prefill:
                 first = project.photos[0]
                 first.light_mode = self.app_settings.last_light()
                 first.magnification = self.app_settings.last_mag()
@@ -171,6 +174,16 @@ class ProjectController(QObject):
         self.app_settings.set_last_folder(folder)
         self.projectLoaded.emit()
         self.schedule_save()
+
+    def start_new_project(self) -> None:
+        """«Начать новый проект»: удалить сохраненную разметку этой папки и открыть ее
+        как совершенно новую партию. Исходные файлы не трогаются; глобальные
+        настройки (резкость, шкала, окно) сохраняются."""
+        folder = self.project.source_dir
+        self._save_timer.stop()
+        state.start_new(folder)
+        self.project = Project()
+        self.open_folder(folder, None, prefill=False)
 
     def close_project(self) -> None:
         self.save_now()
@@ -265,6 +278,8 @@ class ProjectController(QObject):
             p = self.photos.pop(i)
             if p.source_path not in self.project.removed_paths:
                 self.project.removed_paths.append(p.source_path)
+            if p.has_fingerprint():
+                self.project.removed_fp[p.source_path] = [p.file_size, p.file_mtime_ns]
         if cur in removed_set:
             # ближайшая оставшаяся: следующая за первой убранной, иначе последняя
             new_cur = indices[0]
@@ -278,6 +293,7 @@ class ProjectController(QObject):
             self.photos.insert(i, p)
             if p.source_path in self.project.removed_paths:
                 self.project.removed_paths.remove(p.source_path)
+            self.project.removed_fp.pop(p.source_path, None)
         self.project.current_index = max(0, min(current, len(self.photos) - 1))
         self._after_list_change()
 

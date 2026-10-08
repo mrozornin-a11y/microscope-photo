@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 from .models import Project
@@ -41,6 +42,7 @@ def _atomic_write(path: Path, text: str) -> None:
 def save_project(project: Project) -> None:
     if not project.source_dir:
         return
+    project.saved_at = time.time()
     data = json.dumps(project.to_dict(), ensure_ascii=False, indent=1)
     _atomic_write(project_file(project.source_dir), data)
     _atomic_write(_last_session_file(), json.dumps({"source_dir": project.source_dir}, ensure_ascii=False))
@@ -53,6 +55,8 @@ def load_project_for(folder: str) -> Project | None:
     try:
         data = json.loads(path.read_text("utf-8"))
         project = Project.from_dict(data)
+        if not project.saved_at:
+            project.saved_at = path.stat().st_mtime      # старые файлы проекта без отметки времени
         if not project.photos:
             return None
         return project
@@ -84,6 +88,20 @@ def forget_project(folder: str) -> None:
         project_file(folder).unlink()
     except OSError:
         pass
+
+
+def _same_folder(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def start_new(folder: str) -> None:
+    """Удалить сохраненную разметку папки (project JSON) и ссылку на нее как на
+    последнюю работу. Удаляется только файл состояния проекта — не фотографии
+    и не кэш."""
+    forget_project(folder)
+    last = last_session_folder()
+    if last and _same_folder(last, folder):
+        clear_last_session()
 
 
 def project_has_work(project: Project) -> bool:

@@ -6,6 +6,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QKeyCombination, Qt, QTimer, QUrl
@@ -311,7 +312,11 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ папки
     def _startup(self) -> None:
-        cache.prune()
+        if self.app_settings.cache_auto():
+            # в фоне, чтобы не задерживать запуск; затрагивает только папку кэша
+            days = self.app_settings.cache_max_days()
+            max_bytes = int(self.app_settings.cache_max_gb() * 1024 ** 3)
+            threading.Thread(target=_safe_prune, args=(days, max_bytes), daemon=True).start()
         folder = state.last_session_folder()
         if not folder:
             return
@@ -324,8 +329,7 @@ class MainWindow(QMainWindow):
         if answer is True:
             self._open(folder, saved)
         elif answer is False:
-            state.forget_project(folder)
-            state.clear_last_session()
+            state.start_new(folder)
             self.start_page.set_recent(None)
         else:
             self.start_page.set_recent(folder)
@@ -353,17 +357,17 @@ class MainWindow(QMainWindow):
             if answer is None:
                 return
             if answer is False:
-                state.forget_project(folder)
-                saved = None
-        elif saved is not None and saved.finished:
-            saved = saved  # завершенная работа — открыть с разметкой (можно пересобрать)
+                state.start_new(folder)
+                self._open(folder, None, prefill=False)
+                return
+        # завершенная работа открывается с разметкой (можно пересобрать)
         self._open(folder, saved)
 
-    def _open(self, folder: str, saved) -> None:
+    def _open(self, folder: str, saved, prefill: bool = True) -> None:
         self.statusBar().showMessage("Поиск фотографий…")
         self.setCursor(Qt.CursorShape.WaitCursor)
         try:
-            self.ctrl.open_folder(folder, saved)
+            self.ctrl.open_folder(folder, saved, prefill=prefill)
         except Exception as e:
             log.exception("Не удалось открыть папку")
             QMessageBox.warning(self, "Папка", f"Не удалось открыть папку:\n{e}")
@@ -384,18 +388,50 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(msg, 8000)
 
     def start_over(self) -> None:
-        if not self.ctrl.has_project():
+        if not self.ctrl.has_project() or self.final_page.is_busy():
             return
-        r = QMessageBox.question(
-            self, "Начать заново",
-            "Закрыть текущую партию фотографий и вернуться к выбору папки?\n\n"
-            "Разметка этой папки сохранится, и ее можно будет продолжить.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if r != QMessageBox.StandardButton.Yes:
-            return
+        self._commit_page()
+        box = QMessageBox(self)
+        box.setWindowTitle("Начать заново")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText("Что сделать с текущей работой?")
+        box.setInformativeText(
+            "«Закрыть и сохранить» — разметку можно будет продолжить позже.\n\n"
+            "«Начать новый проект» — удалить сохраненную разметку этой папки и начать "
+            "с чистого листа. Фотографии на диске не удаляются, настройки программы сохраняются.")
+        keep = box.addButton("Закрыть и сохранить", QMessageBox.ButtonRole.AcceptRole)
+        new = box.addButton("Начать новый проект", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep)
+        box.exec()
+        clicked = box.clickedButton()
         folder = self.ctrl.project.source_dir
-        self.ctrl.close_project()
-        self.start_page.set_recent(folder)
+        if clicked is keep:
+            self.ctrl.close_project()
+            self.start_page.set_recent(folder)
+        elif clicked is new:
+            self._start_new_project()
+
+    def _start_new_project(self) -> None:
+        folder = self.ctrl.project.source_dir
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self.ctrl.start_new_project()
+        except Exception as e:
+            log.exception("Не удалось начать новый проект")
+            QMessageBox.warning(self, "Начать заново", f"Не удалось открыть папку заново:\n{e}")
+            return
+        finally:
+            self.unsetCursor()
+        if not self.ctrl.has_project():
+            self.stack.setCurrentWidget(self.start_page)
+            self.start_page.set_recent(None)
+            return
+        self.set_stage(0)
+        self.ctrl.set_current(0)
+        self.statusBar().showMessage(
+            f"Новый проект: {Path(folder).name} — фотографий: {len(self.ctrl.photos)}. "
+            "Прежняя разметка удалена, фотографии не тронуты.", 8000)
 
     def _open_source_folder(self) -> None:
         open_in_explorer(self.ctrl.project.source_dir)
@@ -457,6 +493,13 @@ class MainWindow(QMainWindow):
         self.app_settings.sync()
         self.media.shutdown()
         super().closeEvent(e)
+
+
+def _safe_prune(days: int, max_bytes: int) -> None:
+    try:
+        cache.prune(days, max_bytes)
+    except Exception:
+        log.exception("Автоочистка кэша не выполнена")
 
 
 def open_in_explorer(path: str) -> None:

@@ -31,7 +31,7 @@ PRIO_BACKGROUND = 5
 class _Task:
     priority: int
     seq: int
-    kind: str = field(compare=False)            # prepare / detect / stop
+    kind: str = field(compare=False)            # prepare / detect / clear / stop
     path: str = field(compare=False, default="")
     detect: bool = field(compare=False, default=False)
     prior: Circle | None = field(compare=False, default=None)
@@ -68,13 +68,18 @@ class MediaWorker(QThread):
         self._q.put(_Task(priority, next(self._seq), "detect", path, True, prior, token))
 
     def reset(self) -> None:
-        """Сбросить очередь (новая партия фотографий)."""
+        """Сбросить очередь и память о подготовленных файлах (новая партия фотографий)."""
         try:
             while True:
                 self._q.get_nowait()
         except queue.Empty:
             pass
-        self._detected.clear()
+        self.forget()
+
+    def forget(self) -> None:
+        """Забыть подготовленные файлы (например, после очистки кэша). Выполняется в
+        потоке обработки раньше остальных задач."""
+        self._q.put(_Task(-2, next(self._seq), "clear"))
 
     def stop(self) -> None:
         self.reset()
@@ -87,6 +92,11 @@ class MediaWorker(QThread):
             task = self._q.get()
             if task.kind == "stop":
                 return
+            if task.kind == "clear":
+                self._done.clear()
+                self._detected.clear()
+                self._failed.clear()
+                continue
             try:
                 self._handle(task)
             except Exception as e:  # ошибки одного файла не должны останавливать поток
@@ -99,9 +109,11 @@ class MediaWorker(QThread):
         path = task.path
         if path in self._failed:
             return
-        media = self._done.get(path)
-        if media is None:
-            media = cache.get_or_create(path)
+        known = self._done.get(path)
+        # get_or_create дешев при попадании в кэш и сам замечает замену файла
+        # (ключ кэша — путь + размер + время изменения) или очистку кэша
+        media = cache.get_or_create(path)
+        if known is None or known.preview_path != media.preview_path:
             self._done[path] = media
             if self._emit_prepared:
                 thumb = QImage(str(media.thumb_path))

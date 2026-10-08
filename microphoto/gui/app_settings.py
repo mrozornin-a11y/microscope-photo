@@ -65,5 +65,26 @@ class AppSettings:
         if mag:
             self._s.setValue("defaults/mag", mag)
 
+    # кэш миниатюр и preview (проекты — не кэш и автоматически не удаляются)
+    def cache_auto(self) -> bool:
+        return str(self._s.value("cache/auto", "true")).lower() in ("true", "1")
+
+    def cache_max_gb(self) -> float:
+        try:
+            return max(0.2, float(self._s.value("cache/max_gb", 2.0)))
+        except (TypeError, ValueError):
+            return 2.0
+
+    def cache_max_days(self) -> int:
+        try:
+            return max(1, int(self._s.value("cache/max_days", 30)))
+        except (TypeError, ValueError):
+            return 30
+
+    def set_cache_policy(self, auto: bool, max_gb: float, max_days: int) -> None:
+        self._s.setValue("cache/auto", "true" if auto else "false")
+        self._s.setValue("cache/max_gb", float(max_gb))
+        self._s.setValue("cache/max_days", int(max_days))
+
     def sync(self) -> None:
         self._s.sync()

@@ -54,6 +54,10 @@ class MediaService(QObject):
     def _on_project(self) -> None:
         self.worker.reset()
         self.det_worker.reset()
+        # данные прошлой партии не переносим (файл с тем же именем может быть другим)
+        self._thumbs.clear()
+        self._previews.clear()
+        self._errors.clear()
         self._index = {p.source_path: i for i, p in enumerate(self.ctrl.photos)}
         self._pixmaps.clear()
         self._detect_tokens.clear()
@@ -63,6 +67,15 @@ class MediaService(QObject):
                 self.worker.request(p.source_path, PRIO_BACKGROUND)
                 if p.circle is None:
                     self.det_worker.request(p.source_path, PRIO_BACKGROUND, detect=True)
+
+    def on_cache_cleared(self) -> None:
+        """Кэш на диске очищен: preview создадутся заново по мере надобности."""
+        self.worker.forget()
+        self.det_worker.forget()
+        self._previews.clear()
+        self._pixmaps.clear()
+        self._errors.clear()
+        self._on_current(self.ctrl.current_index)
 
     def _reindex(self) -> None:
         """Состав партии изменился — результаты фоновых задач ищем по пути, а не по старому индексу."""

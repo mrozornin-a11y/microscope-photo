@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QPushButton, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
                                QVBoxLayout, QWidget)
 
+from ..core import cache
 from ..core.constants import EXPORT_FORMATS, MAGNIFICATIONS
 from ..core.cropper import apply_mask, crop_square
 from ..core.image_loader import load_oriented
@@ -33,7 +34,7 @@ log = logging.getLogger(__name__)
 
 PREVIEW_SIDE = 900
 
-TAB_PROCESSING, TAB_SCALE, TAB_EXPORT = 0, 1, 2
+TAB_PROCESSING, TAB_SCALE, TAB_EXPORT, TAB_STORAGE = 0, 1, 2, 3
 
 
 def _combo(options: dict[str, str]) -> QComboBox:
@@ -88,6 +89,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._build_processing_tab(), "Обработка")
         self.tabs.addTab(self._build_scale_tab(), "Масштабная шкала")
         self.tabs.addTab(self._build_export_tab(), "Экспорт")
+        self.tabs.addTab(self._build_storage_tab(), "Хранилище")
         self.tabs.currentChanged.connect(self._tab_changed)
         lay.addWidget(self.tabs, 1)
 
@@ -315,6 +317,69 @@ class SettingsDialog(QDialog):
                         "изменяются — результат всегда создается заново из оригиналов."))
         return w
 
+    # ---------------------------------------------------------------- хранилище
+    def _build_storage_tab(self) -> QWidget:
+        """Настройки программы, а не партии: в историю Undo не попадают."""
+        w = QWidget()
+        root = QVBoxLayout(w)
+        box = QGroupBox("Кэш миниатюр и предпросмотра")
+        bl = QVBoxLayout(box)
+        row = QHBoxLayout()
+        self.cache_lbl = QLabel("Кэш: …")
+        self.cache_lbl.setStyleSheet("font-size: 11pt;")
+        row.addWidget(self.cache_lbl)
+        row.addStretch(1)
+        clear_btn = QPushButton("Очистить кэш")
+        clear_btn.clicked.connect(self._clear_cache)
+        row.addWidget(clear_btn)
+        bl.addLayout(row)
+        bl.addWidget(_note("Удаляются только миниатюры и изображения предпросмотра. Исходные фотографии "
+                           "и разметка проектов не удаляются. Предпросмотр при необходимости "
+                           "создается заново."))
+        root.addWidget(box)
+
+        auto = QGroupBox("Автоочистка (при запуске программы)")
+        fl = QFormLayout(auto)
+        a = self.ctrl.app_settings
+        self.cache_auto = QCheckBox("автоматически")
+        self.cache_auto.setChecked(a.cache_auto())
+        fl.addRow("Автоочистка:", self.cache_auto)
+        self.cache_gb = QDoubleSpinBox()
+        self.cache_gb.setRange(0.5, 100.0)
+        self.cache_gb.setSingleStep(0.5)
+        self.cache_gb.setDecimals(1)
+        self.cache_gb.setSuffix(" ГБ")
+        self.cache_gb.setValue(a.cache_max_gb())
+        fl.addRow("Хранить не более:", self.cache_gb)
+        self.cache_days = QSpinBox()
+        self.cache_days.setRange(1, 365)
+        self.cache_days.setSuffix(" дн.")
+        self.cache_days.setValue(a.cache_max_days())
+        fl.addRow("Удалять неиспользуемый кэш старше:", self.cache_days)
+        self.cache_auto.toggled.connect(lambda on: (self.cache_gb.setEnabled(on), self.cache_days.setEnabled(on)))
+        self.cache_gb.setEnabled(self.cache_auto.isChecked())
+        self.cache_days.setEnabled(self.cache_auto.isChecked())
+        fl.addRow(_note("Сначала удаляется кэш старше указанного срока, затем — самый давний, "
+                        "пока объем не станет меньше лимита. Сохраненная разметка проектов хранится "
+                        "отдельно и автоматически никогда не удаляется."))
+        root.addWidget(auto)
+        root.addStretch(1)
+        return w
+
+    def _update_cache_size(self) -> None:
+        mb = cache.cache_size() / 1024 ** 2
+        self.cache_lbl.setText(f"Кэш: {mb:.0f} МБ" if mb >= 10 else f"Кэш: {mb:.1f} МБ")
+
+    def _clear_cache(self) -> None:
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            freed = cache.clear_cache()
+            self.media.on_cache_cleared()
+        finally:
+            self.unsetCursor()
+        self._update_cache_size()
+        self.cache_lbl.setText(self.cache_lbl.text() + f"   (освобождено {freed / 1024 ** 2:.0f} МБ)")
+
     # ---------------------------------------------------------------- значения
     def _load_values(self) -> None:
         s = self.s
@@ -383,8 +448,12 @@ class SettingsDialog(QDialog):
             self._update_sharp_preview()
         elif i == TAB_SCALE:
             self._update_scale_preview()
+        elif i == TAB_STORAGE:
+            self._update_cache_size()
 
     def accept(self) -> None:
+        self.ctrl.app_settings.set_cache_policy(self.cache_auto.isChecked(), self.cache_gb.value(),
+                                                self.cache_days.value())
         self._read_values()
         self.ctrl.set_settings(self.s, describe_change(self.ctrl.settings, self.s))
         super().accept()
