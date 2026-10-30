@@ -48,11 +48,11 @@ class ToggleGroup(QWidget):
 
 
 class StepBar(QWidget):
-    """[1. Фотографии] → [2. Поле зрения] → [3. Готово]"""
+    """[1. Фотографии] → [2. Проверка имен] → [3. Поле зрения] → [4. Готово]"""
 
     stepClicked = Signal(int)
 
-    TITLES = ("1. Фотографии", "2. Поле зрения", "3. Готово")
+    TITLES = ("1. Фотографии", "2. Проверка имен", "3. Поле зрения", "4. Готово")
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

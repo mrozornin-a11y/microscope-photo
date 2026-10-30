@@ -164,7 +164,7 @@ class CropPage(QWidget):
             text, color = "Круг найден автоматически.\nЕсли он верный — нажмите Enter.", "#1f2328"
         self.status.setText(text)
         self.status.setStyleSheet(f"font-size: 11pt; color: {color};")
-        out = naming.output_file_name(p, self.ctrl.settings.export.format)
+        out = naming.output_display(p, self.ctrl.settings.export.format)
         self.name_lbl.setText(out or "Параметры фото не заполнены")
         self._update_progress()
 

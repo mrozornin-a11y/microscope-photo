@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWi
 
 from .. import APP_TITLE
 from ..core import cache, project_ops, state
+from ..core.models import STAGE_CROP, STAGE_DONE, STAGE_NAMES, STAGE_PHOTOS
 from .app_settings import AppSettings
 from .controller import ProjectController
 from .crop_page import CropPage
@@ -23,6 +24,7 @@ from .final_page import FinalPage
 from .settings_dialog import SettingsDialog
 from .dialogs import ask_continue
 from .media import MediaService
+from .names_page import NamesPage
 from .photo_page import PhotoPage
 from .start_page import StartPage
 from .widgets.photo_list import PhotoListView
@@ -87,7 +89,7 @@ class MainWindow(QMainWindow):
         ws.addWidget(self._build_nav_bar())
 
         self.photo_page = PhotoPage(self.ctrl, self.media)
-        self.photo_page.finished.connect(lambda: self.set_stage(1, jump_unconfirmed=True))
+        self.photo_page.finished.connect(lambda: self.set_stage(STAGE_NAMES))
         self.page_list: list[QWidget] = [self.photo_page]
         self._add_more_pages()
         for p in self.page_list:
@@ -107,9 +109,13 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._startup)
 
     def _add_more_pages(self) -> None:
-        """Страницы этапов 2 и 3."""
+        """Страницы этапов 2–4 (порядок = STAGE_NAMES, STAGE_CROP, STAGE_DONE)."""
+        self.names_page = NamesPage(self.ctrl, self.media)
+        self.names_page.finished.connect(lambda: self.set_stage(STAGE_CROP, jump_unconfirmed=True))
+        self.names_page.fixRequested.connect(lambda i: self._goto_photo_stage(i, STAGE_PHOTOS))
+        self.page_list.append(self.names_page)
         self.crop_page = CropPage(self.ctrl, self.media)
-        self.crop_page.finished.connect(lambda: self.set_stage(2))
+        self.crop_page.finished.connect(lambda: self.set_stage(STAGE_DONE))
         self.page_list.append(self.crop_page)
         self.final_page = FinalPage(self.ctrl, self.media)
         self.final_page.openSettings.connect(lambda: self.open_settings(0))
@@ -270,7 +276,7 @@ class MainWindow(QMainWindow):
         self.ctrl.set_stage(stage)
         self.pages.setCurrentIndex(stage)
         self.step_bar.set_step(stage)
-        if jump_unconfirmed and stage == 1:
+        if jump_unconfirmed and stage == STAGE_CROP:
             j = project_ops.first_unconfirmed(self.ctrl.photos)
             self.ctrl.set_current(j if j is not None else 0)
         page = self.current_page()
@@ -307,7 +313,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.workspace)
         self.set_stage(min(self.ctrl.project.stage, len(self.page_list) - 1))
         cur = self.ctrl.current
-        if self.ctrl.project.stage == 0 and cur is not None and not cur.sample_name:
+        if self.ctrl.project.stage == STAGE_PHOTOS and cur is not None and not cur.sample_name:
             self.photo_page.name_combo.setFocus()   # можно сразу печатать название
 
     # ------------------------------------------------------------ папки

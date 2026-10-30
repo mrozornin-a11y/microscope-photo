@@ -296,6 +296,11 @@ class ProcessingSettings:
         )
 
 
+# Этапы работы
+STAGE_PHOTOS, STAGE_NAMES, STAGE_CROP, STAGE_DONE = 0, 1, 2, 3
+PROJECT_VERSION = 2
+
+
 @dataclass
 class Project:
     """Одна партия фотографий (одна исходная папка)."""
@@ -305,7 +310,7 @@ class Project:
     photos: list[PhotoItem] = field(default_factory=list)
     settings: ProcessingSettings = field(default_factory=ProcessingSettings)
     current_index: int = 0
-    stage: int = 0                  # 0 — фотографии, 1 — поле зрения, 2 — готово
+    stage: int = 0                  # STAGE_PHOTOS / STAGE_NAMES / STAGE_CROP / STAGE_DONE
     finished: bool = False          # экспорт выполнен и после него ничего не меняли
     name_list: list[str] = field(default_factory=list)
     # фото, убранные из партии (файлы на диске не тронуты) — не возвращать при пересканировании
@@ -316,7 +321,7 @@ class Project:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": PROJECT_VERSION,
             "source_dir": self.source_dir,
             "output_dir": self.output_dir,
             "current_index": self.current_index,
@@ -361,5 +366,11 @@ class Project:
             p.current_index = max(0, min(int(d.get("current_index", 0)), max(0, len(photos) - 1)))
         except (TypeError, ValueError):
             p.current_index = 0
-        p.stage = max(0, min(2, p.stage))
+        try:
+            version = int(d.get("version", 1))
+        except (TypeError, ValueError):
+            version = 1
+        if version < 2 and p.stage >= 1:
+            p.stage += 1           # в версии 2 добавлен этап «Проверка имен» после «Фотографий»
+        p.stage = max(STAGE_PHOTOS, min(STAGE_DONE, p.stage))
         return p

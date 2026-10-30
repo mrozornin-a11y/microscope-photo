@@ -69,7 +69,7 @@ class PhotoListModel(QAbstractListModel):
             return self.media.thumbnail(index.row())
         if role == Qt.ItemDataRole.ToolTipRole:
             lines = [p.file_name]
-            name = naming.output_file_name(p, self.ctrl.settings.export.format)
+            name = naming.output_display(p, self.ctrl.settings.export.format)
             if name:
                 lines.append(f"Результат: {name}")
             err = self.media.error(index.row()) or p.export_error

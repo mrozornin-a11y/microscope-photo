@@ -42,3 +42,24 @@ def output_file_name(photo: PhotoItem, fmt: str) -> str | None:
 def duplicate_name(file_name: str, n: int) -> str:
     p = Path(file_name)
     return f"{p.stem}__повтор_{n}{p.suffix}"
+
+
+def output_folder(photo: PhotoItem) -> str | None:
+    """Папка результата: называется именем шлифа (все фото шлифа — в одной папке)."""
+    if not photo.sample_name.strip():
+        return None
+    return sanitize(photo.sample_name) or "без_названия"
+
+
+def output_relpath(photo: PhotoItem, fmt: str) -> Path | None:
+    """Путь результата относительно папки результата: «Шлиф/Номер_Шлиф_Режим_Увеличение.ext»."""
+    name = output_file_name(photo, fmt)
+    folder = output_folder(photo)
+    if name is None or folder is None:
+        return None
+    return Path(folder) / name
+
+
+def output_display(photo: PhotoItem, fmt: str) -> str | None:
+    rel = output_relpath(photo, fmt)
+    return None if rel is None else f"{rel.parent.name}\\{rel.name}"

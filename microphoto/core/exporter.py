@@ -37,6 +37,7 @@ class ExportPlan:
     items: list[ExportItem] = field(default_factory=list)
     skipped_incomplete: list[int] = field(default_factory=list)
     stale_files: list[Path] = field(default_factory=list)    # старые результаты этой партии, ставшие ненужными
+    out_dir: Path | None = None
 
     @property
     def duplicates(self) -> int:
@@ -63,25 +64,45 @@ def _key(p: Path) -> str:
     return os.path.normcase(str(p.resolve()))
 
 
+def _is_inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def remove_empty_dirs(dirs: set[Path], root: Path) -> None:
+    """Удалить опустевшие папки шлифов (только внутри папки результата и только пустые)."""
+    for d in sorted(dirs, key=lambda x: len(x.parts), reverse=True):
+        try:
+            if d.resolve() != root.resolve() and _is_inside(d, root) and d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+        except OSError:
+            pass
+
+
 def plan_export(photos: list[PhotoItem], indices: list[int], out_dir: str | Path,
                 settings: ExportSettings) -> ExportPlan:
     out_dir = Path(out_dir)
-    plan = ExportPlan()
+    plan = ExportPlan(out_dir=out_dir)
     own: dict[str, int] = {}
     for i, p in enumerate(photos):
-        if is_own_file(p) and _key(Path(p.output_path).parent) == _key(out_dir):
+        # свои прежние результаты: в папке результата или в ее подпапках шлифов
+        if is_own_file(p) and _is_inside(Path(p.output_path), out_dir):
             own[_key(Path(p.output_path))] = i
     used: set[str] = set()
     for i in indices:
         p = photos[i]
-        name = naming.output_file_name(p, settings.format)
-        if name is None:
+        rel = naming.output_relpath(p, settings.format)
+        if rel is None:
             plan.skipped_incomplete.append(i)
             continue
+        folder, name = out_dir / rel.parent, rel.name     # папка шлифа / имя файла
         n = 1
         candidate = name
         while True:
-            path = out_dir / candidate
+            path = folder / candidate
             key = _key(path)
             if key not in used and (key in own or not path.exists()):
                 break
@@ -95,7 +116,8 @@ def plan_export(photos: list[PhotoItem], indices: list[int], out_dir: str | Path
 
 
 def save_image(img: Image.Image, path: Path, settings: ExportSettings, source: LoadedImage | None = None) -> None:
-    """Сохранение через временный файл: при сбое не остается «полуфайлов»."""
+    """Сохранение через временный файл: при сбое не остается «полуфайлов».
+    Папка шлифа создается при необходимости."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.stem}.tmp{path.suffix}")
     params: dict = {}

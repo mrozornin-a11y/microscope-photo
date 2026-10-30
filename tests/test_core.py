@@ -147,14 +147,17 @@ def test_scan_sorts_by_exif_time(tmp_path):
 def test_plan_export_duplicates_and_ownership(tmp_path):
     out = tmp_path / "out"
     out.mkdir()
+    sample = out / "Св-25-14"                       # результаты — в папке шлифа
     ps = [photo(source_path="a.jpg"), photo(source_path="b.jpg"), photo(source_path="c.jpg", photo_number=2)]
     plan = exporter.plan_export(ps, [0, 1, 2], out, ExportSettings())
+    assert all(it.path.parent == sample for it in plan.items)
     names = [it.path.name for it in plan.items]
     assert names == ["1_Св-25-14_отраж_10х.jpg", "1_Св-25-14_отраж_10х__повтор_2.jpg", "2_Св-25-14_отраж_10х.jpg"]
 
     # чужой файл не перезаписывается, свой — перезаписывается
-    (out / "2_Св-25-14_отраж_10х.jpg").write_bytes(b"foreign")
-    own = out / "1_Св-25-14_отраж_10х.jpg"
+    sample.mkdir()
+    (sample / "2_Св-25-14_отраж_10х.jpg").write_bytes(b"foreign")
+    own = sample / "1_Св-25-14_отраж_10х.jpg"
     own.write_bytes(b"ours")
     ps[0].output_path = str(own)
     ps[0].output_signature = exporter.file_signature(own)
@@ -164,6 +167,55 @@ def test_plan_export_duplicates_and_ownership(tmp_path):
     # смена формата: старый собственный JPG становится устаревшим
     plan = exporter.plan_export(ps, [0], out, ExportSettings(format="tiff"))
     assert plan.stale_files == [own]
+
+
+def test_export_split_by_sample_folders(tmp_path):
+    out = tmp_path / "out"
+    ps = [photo(source_path="a.jpg", sample_name="Св-1"), photo(source_path="b.jpg", sample_name="Св-2"),
+          photo(source_path="c.jpg", sample_name="Св-1", photo_number=2),
+          photo(source_path="d.jpg", sample_name='Ш:3/7')]          # недопустимые символы
+    plan = exporter.plan_export(ps, [0, 1, 2, 3], out, ExportSettings())
+    rel = [it.path.relative_to(out).as_posix() for it in plan.items]
+    assert rel == ["Св-1/1_Св-1_отраж_10х.jpg", "Св-2/1_Св-2_отраж_10х.jpg", "Св-1/2_Св-1_отраж_10х.jpg",
+                   "Ш37/1_Ш37_отраж_10х.jpg"]
+    # одинаковые имена в разных папках шлифов — не повтор
+    assert plan.duplicates == 0
+
+
+def test_old_flat_results_become_stale_and_empty_folders_removed(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    flat = out / "1_Св-25-14_отраж_10х.jpg"          # результат прежней версии (без подпапки)
+    flat.write_bytes(b"x")
+    p = photo(source_path="a.jpg", output_path=str(flat), output_signature=exporter.file_signature(flat))
+    plan = exporter.plan_export([p], [0], out, ExportSettings())
+    assert plan.items[0].path == out / "Св-25-14" / flat.name and plan.stale_files == [flat]
+    old_dir = out / "Старое"
+    old_dir.mkdir()
+    exporter.remove_empty_dirs({old_dir, out}, out)
+    assert not old_dir.exists() and out.exists()
+
+
+def test_name_check_reports_problems():
+    from microphoto.core.name_check import check_names
+
+    ps = [photo(source_path="a.jpg"), photo(source_path="b.jpg"),       # одинаковые имена
+          photo(source_path="c.jpg", magnification=None),                # не задано увеличение
+          photo(source_path="d.jpg", photo_number=5),                    # в порядке
+          photo(source_path="e.jpg", excluded=True, sample_name="")]     # не обрабатывается
+    rows = check_names(ps, "jpg", unreadable={3})
+    assert rows[0].problems == ["имя совпадает с фото № 2"] and rows[1].problems == ["имя совпадает с фото № 1"]
+    assert rows[2].problems == ["не задано: увеличение"] and rows[2].new_name == ""
+    assert rows[3].problems == ["файл не открывается"] and rows[3].new_name == "5_Св-25-14_отраж_10х.jpg"
+    assert rows[3].folder == "Св-25-14"
+    assert rows[4].excluded and rows[4].ok
+
+
+def test_project_stage_migration():
+    old = {"version": 1, "stage": 1, "photos": [{"source_path": "a.jpg"}]}
+    assert Project.from_dict(old).stage == 2                  # «Поле зрения» сдвинулось
+    assert Project.from_dict({"version": 1, "stage": 2, "photos": []}).stage == 3
+    assert Project.from_dict(Project(stage=1).to_dict()).stage == 1
 
 
 def test_save_formats(tmp_path):

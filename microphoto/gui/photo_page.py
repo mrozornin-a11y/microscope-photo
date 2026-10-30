@@ -242,7 +242,7 @@ class PhotoPage(QWidget):
         if p.excluded:
             self.out_name.setText("—")
             return
-        name = naming.output_file_name(p, self.ctrl.settings.export.format)
+        name = naming.output_display(p, self.ctrl.settings.export.format)
         if name:
             self.out_name.setText(name)
             self.out_name.setStyleSheet("")
@@ -308,7 +308,7 @@ class PhotoPage(QWidget):
     def next_label(self) -> str:
         i = self.ctrl.current_index
         if i >= len(self.ctrl.photos) - 1:
-            return "К полю зрения →"
+            return "К проверке имен →"
         return "Далее →"
 
     def go_next(self) -> None:

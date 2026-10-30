@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import QThread, Signal
 
-from ..core.exporter import ExportPlan, file_signature, save_image
+from ..core.exporter import ExportPlan, file_signature, remove_empty_dirs, save_image
 from ..core.models import PhotoItem, ProcessingSettings
 from ..core.pipeline import ProcessingError, render
 
@@ -67,12 +67,16 @@ class ExportWorker(QThread):
                 log.error("Ошибка обработки %s:\n%s", photo.source_path, traceback.format_exc())
             self.progress.emit(n + 1, total)
         if not summary.cancelled:
+            emptied = set()
             for p in self.plan.stale_files:
                 try:
                     p.unlink()
                     summary.removed_stale += 1
+                    emptied.add(p.parent)
                 except OSError:
                     pass
+            if self.plan.out_dir is not None:
+                remove_empty_dirs(emptied, self.plan.out_dir)
         self.finishedAll.emit(summary)
 
 

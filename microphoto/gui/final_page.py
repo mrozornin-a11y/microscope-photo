@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QHBoxLayout, QLab
 
 from ..core import naming, project_ops
 from ..core.constants import EXPORT_FORMATS
-from ..core.models import BACKGROUND_COLORS
+from ..core.models import BACKGROUND_COLORS, STAGE_CROP, STAGE_PHOTOS
 from ..core.exporter import plan_export
 from ..workers.export_worker import ExportSummary, ExportWorker
 from ..workers.render_worker import FinalRenderer
@@ -379,7 +379,7 @@ class FinalPage(QWidget):
             self.fix_btn.setVisible(False)
 
         fmt = self.ctrl.settings.export.format
-        self.name_lbl.setText(naming.output_file_name(p, fmt) or "— параметры не заполнены —")
+        self.name_lbl.setText(naming.output_display(p, fmt) or "— параметры не заполнены —")
         sc = self.ctrl.settings.scale
         if p.excluded:
             self.scale_lbl.setText("Это фото не будет обработано")
@@ -403,9 +403,9 @@ class FinalPage(QWidget):
     def _goto_problem(self) -> None:
         incomplete, unconfirmed = self._problems()
         if incomplete:
-            self.gotoPhoto.emit(incomplete[0], 0)
+            self.gotoPhoto.emit(incomplete[0], STAGE_PHOTOS)
         elif unconfirmed:
-            self.gotoPhoto.emit(unconfirmed[0], 1)
+            self.gotoPhoto.emit(unconfirmed[0], STAGE_CROP)
 
     def _toggle_more(self) -> None:
         vis = not self.more.isVisible()
@@ -473,7 +473,7 @@ class FinalPage(QWidget):
             box.setDefaultButton(go)
             box.exec()
             if box.clickedButton() is go:
-                self.gotoPhoto.emit(incomplete[0], 0)
+                self.gotoPhoto.emit(incomplete[0], STAGE_PHOTOS)
                 return
         if unconfirmed:
             box = QMessageBox(self)
@@ -485,7 +485,7 @@ class FinalPage(QWidget):
             go = box.addButton("Проверить", QMessageBox.ButtonRole.RejectRole)
             box.exec()
             if box.clickedButton() is go:
-                self.gotoPhoto.emit(unconfirmed[0], 1)
+                self.gotoPhoto.emit(unconfirmed[0], STAGE_CROP)
                 return
         out_dir = self.output_dir()
         if not out_dir:
