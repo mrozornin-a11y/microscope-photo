@@ -211,6 +211,22 @@ def test_name_check_reports_problems():
     assert rows[4].excluded and rows[4].ok
 
 
+def test_name_check_one_magnification_per_number():
+    from microphoto.core.name_check import check_names
+
+    ps = [photo(source_path="a.jpg", photo_number=6, light_mode="ppl", magnification="10"),
+          photo(source_path="b.jpg", photo_number=6, light_mode="xpl", magnification="10"),
+          photo(source_path="c.jpg", photo_number=6, light_mode="refl", magnification="20"),
+          photo(source_path="d.jpg", photo_number=7, magnification="5"),
+          photo(source_path="e.jpg", photo_number=6, magnification="2.5", sample_name="Другой")]
+    rows = check_names(ps, "jpg")
+    text = "у номера 6 разные увеличения: 10× — фото № 1, № 2; 20× — фото № 3"
+    assert [r.problems for r in rows[:3]] == [[text]] * 3
+    assert rows[3].ok and rows[4].ok          # другой номер и другой шлиф — не ошибка
+    ps[2].magnification = "10"
+    assert all(r.ok for r in check_names(ps, "jpg"))
+
+
 def test_project_stage_migration():
     old = {"version": 1, "stage": 1, "photos": [{"source_path": "a.jpg"}]}
     assert Project.from_dict(old).stage == 2                  # «Поле зрения» сдвинулось
