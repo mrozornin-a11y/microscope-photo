@@ -58,7 +58,7 @@ def inherit_values(photos: list[PhotoItem], index: int) -> dict[str, Any]:
     if target.photo_number is None:
         last = _last_number_before(photos, index)
         if last is not None:
-            new["photo_number"] = last + 1
+            new["photo_number"] = last        # номер переносится без увеличения
     return new
 
 

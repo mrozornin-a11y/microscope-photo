@@ -38,17 +38,17 @@ def test_output_name_sanitized_and_incomplete():
 
 
 # ------------------------------------------------------------------ наследование
-def test_inherit_fills_only_blanks_and_increments_number():
+def test_inherit_fills_only_blanks_and_keeps_number():
     ps = [photo(photo_number=7), PhotoItem("b.jpg"), PhotoItem("c.jpg", sample_name="Другой")]
     assert project_ops.inherit_values(ps, 1) == {
-        "sample_name": "Св-25-14", "light_mode": "refl", "magnification": "10", "photo_number": 8}
+        "sample_name": "Св-25-14", "light_mode": "refl", "magnification": "10", "photo_number": 7}
     v = project_ops.inherit_values(ps, 2)
-    assert "sample_name" not in v and v["photo_number"] == 8
+    assert "sample_name" not in v and v["photo_number"] == 7
 
 
 def test_inherit_skips_excluded():
-    ps = [photo(photo_number=1), PhotoItem("b.jpg", excluded=True), PhotoItem("c.jpg")]
-    assert project_ops.inherit_values(ps, 2)["photo_number"] == 2
+    ps = [photo(photo_number=1), PhotoItem("b.jpg", excluded=True, photo_number=9), PhotoItem("c.jpg")]
+    assert project_ops.inherit_values(ps, 2)["photo_number"] == 1
 
 
 def test_apply_params_forward_renumbers():

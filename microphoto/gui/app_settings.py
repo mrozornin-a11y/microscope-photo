@@ -65,6 +65,16 @@ class AppSettings:
         if mag:
             self._s.setValue("defaults/mag", mag)
 
+    # число кнопок номера фотографии (1…N)
+    def number_buttons(self) -> int:
+        try:
+            return max(20, min(200, int(self._s.value("ui/number_buttons", 20))))
+        except (TypeError, ValueError):
+            return 20
+
+    def set_number_buttons(self, n: int) -> None:
+        self._s.setValue("ui/number_buttons", int(n))
+
     # кэш миниатюр и preview (проекты — не кэш и автоматически не удаляются)
     def cache_auto(self) -> bool:
         return str(self._s.value("cache/auto", "true")).lower() in ("true", "1")

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QStringListModel, Qt, Signal
 from PySide6.QtWidgets import (QComboBox, QCompleter, QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu,
-                               QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget)
+                               QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from ..core import naming, project_ops
 from ..core.constants import LIGHT_MODES, MAGNIFICATIONS
@@ -15,7 +15,7 @@ from .controller import ProjectController
 from .dialogs import ApplyParamsDialog
 from .media import MediaService
 from .widgets.image_viewer import ImageViewer
-from .widgets.toggles import ToggleGroup
+from .widgets.toggles import NumberPad, ToggleGroup
 
 
 def section(text: str) -> QLabel:
@@ -44,7 +44,18 @@ class PhotoPage(QWidget):
         side.setObjectName("SidePanel")
         side.setFixedWidth(340)
         root.addWidget(side)
-        lay = QVBoxLayout(side)
+        # на невысоком экране панель прокручивается, а не растягивает окно
+        side_lay = QVBoxLayout(side)
+        side_lay.setContentsMargins(0, 0, 0, 0)
+        side_scroll = QScrollArea()
+        side_scroll.setWidgetResizable(True)
+        side_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        side_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        side_lay.addWidget(side_scroll)
+        inner = QWidget()
+        side_scroll.setWidget(inner)
+        lay = QVBoxLayout(inner)
         lay.setContentsMargins(18, 14, 18, 14)
         lay.setSpacing(6)
 
@@ -91,13 +102,20 @@ class PhotoPage(QWidget):
         # --- номер
         lay.addSpacing(4)
         lay.addWidget(section("Номер фотографии"))
-        self.number = QSpinBox()
-        self.number.setObjectName("BigSpin")
-        self.number.setRange(0, 99999)
-        self.number.setSpecialValueText("—")
-        self.number.setButtonSymbols(QSpinBox.ButtonSymbols.UpDownArrows)
-        self.number.valueChanged.connect(self._number_changed)
-        lay.addWidget(self.number)
+        # номер — кнопками; «＋5» добавляет кнопки, если фото в серии больше 20
+        self.number_pad = NumberPad(ctrl.app_settings.number_buttons())
+        self.number_pad.numberClicked.connect(self._number_clicked)
+        self.number_pad.countChanged.connect(ctrl.app_settings.set_number_buttons)
+        # много кнопок — прокрутка, чтобы панель не вытесняла остальные поля
+        self.number_scroll = QScrollArea()
+        self.number_scroll.setWidgetResizable(True)
+        self.number_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.number_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.number_scroll.setWidget(self.number_pad)
+        self.number_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        self.number_pad.countChanged.connect(lambda _n: self._fit_number_scroll())
+        lay.addWidget(self.number_scroll)
+        self._fit_number_scroll()
 
         # --- имя результата
         lay.addSpacing(8)
@@ -191,12 +209,13 @@ class PhotoPage(QWidget):
             self._shown_index = self.ctrl.current_index
             self.light.set_value(p.light_mode)
             self.mag.set_value(p.magnification)
-            if not (self.number.hasFocus() and same_photo):
-                self.number.setValue(p.photo_number or 0)
+            self.number_pad.set_value(p.photo_number)
+            if p.photo_number and p.photo_number <= self.number_pad.count():
+                self.number_scroll.ensureWidgetVisible(self.number_pad.button(p.photo_number), 0, 4)
         finally:
             self._updating = False
         enabled = not p.excluded
-        for w in (self.name_combo, self.light, self.mag, self.number, self.apply_btn):
+        for w in (self.name_combo, self.light, self.mag, self.number_pad, self.apply_btn):
             w.setEnabled(enabled)
         self.excluded_banner.setVisible(p.excluded)
         self._update_out_name()
@@ -250,13 +269,8 @@ class PhotoPage(QWidget):
             self.ctrl.edit(self.ctrl.current_index, {"sample_name": text}, "Название шлифа")
             self._refresh_names()
 
-    def commit_number(self) -> None:
-        if self.number.hasFocus():
-            self.number.interpretText()
-
     def commit_pending(self) -> None:
         """Перед переходом к другой фотографии — зафиксировать то, что вводится."""
-        self.commit_number()
         self.commit_name()
 
     def _light_clicked(self, key: str) -> None:
@@ -275,12 +289,20 @@ class PhotoPage(QWidget):
             return
         self._mag_clicked(MAGNIFICATIONS[n - 1].key)
 
-    def _number_changed(self, value: int) -> None:
-        if self._updating or self.ctrl.current is None:
-            return
-        i = self.ctrl.current_index
-        self.ctrl.edit(i, {"photo_number": value or None}, "Номер фотографии", merge_key=f"number:{i}")
-        self._update_out_name()
+    NUMBER_ROW_H = 37          # высота ряда кнопок номера с промежутком
+    NUMBER_MAX_ROWS = 7
+
+    def _fit_number_scroll(self) -> None:
+        rows = (self.number_pad.count() + NumberPad.COLUMNS - 1) // NumberPad.COLUMNS + 1   # + ряд «＋5»
+        self.number_scroll.setFixedHeight(min(rows, self.NUMBER_MAX_ROWS) * self.NUMBER_ROW_H)
+        self.number_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded if rows > self.NUMBER_MAX_ROWS
+            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+    def _number_clicked(self, n: int) -> None:
+        self.commit_name()
+        self.ctrl.edit(self.ctrl.current_index, {"photo_number": n}, "Номер фотографии")
+        self.refresh(load_image=False)
 
     # ---------------------------------------------------------- навигация
     def next_label(self) -> str:

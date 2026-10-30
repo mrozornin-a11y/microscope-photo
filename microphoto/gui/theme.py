@@ -142,6 +142,21 @@ QPushButton#Toggle:checked {{
     font-weight: 600;
     padding: 7px 9px;
 }}
+QPushButton#NumButton, QPushButton#NumTile {{
+    padding: 4px 0px;
+    min-height: 22px;
+}}
+QPushButton#NumButton:checked {{
+    background: {ACCENT_SOFT};
+    border: 2px solid {ACCENT};
+    color: {ACCENT_HOVER};
+    font-weight: 600;
+    padding: 3px 0px;
+}}
+QPushButton#NumTile {{
+    color: {ACCENT};
+    border-style: dashed;
+}}
 QToolButton {{
     background: transparent;
     border: 1px solid transparent;
