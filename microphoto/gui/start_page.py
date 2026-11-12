@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
 from ..core.image_loader import HEIC_SUPPORTED
+from ..resources import resource_path
 
 
 class StartPage(QWidget):
@@ -17,6 +19,11 @@ class StartPage(QWidget):
         self.setObjectName("StartPage")
         lay = QVBoxLayout(self)
         lay.addStretch(2)
+        emblem = QSvgWidget(resource_path("emblem.svg"))
+        emblem.setFixedSize(112, 112)
+        emblem.setAccessibleName("Эмблема Микрофото")
+        lay.addWidget(emblem, 0, Qt.AlignmentFlag.AlignCenter)
+        lay.addSpacing(10)
         title = QLabel("Подготовка микрофотографий")
         title.setObjectName("BigTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
